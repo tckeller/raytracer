@@ -87,7 +87,7 @@ class Ray:
         if offset is None:
             return None
         direction = self.direction - directed_normal*(self.direction.dot(directed_normal)*2)
-        return Ray(offset=self.intersect(poly)[0], direction=direction)
+        return Ray(offset=offset, direction=direction)
 
     def intersect(self, poly: 'Polygon') -> Tuple[Optional[Vector], Optional[float]]:
         intersect, distance = self.point_on_line(
@@ -95,12 +95,13 @@ class Ray:
         )
         return (None, None) if not poly.is_inside(intersect) else (intersect, distance)
 
-    def multi_reflect(self, world: 'Geometry', distances: List[float]) -> Union[None, 'Ray']:
+    def multi_reflect(self, world: 'Geometry') -> Tuple[Union[None, 'Ray'], Union[None, 'Polygon']]:
+        distances = self.distances_to_polys(world)
         try:
             first_intersect = np.nanargmin(distances)
         except ValueError as e:
-            return None
-        return self.reflect(world.elements[first_intersect])
+            return None, None
+        return self.reflect(world.elements[first_intersect]), world.elements[first_intersect]
 
     def distances_to_polys(self, world):
         distances = [self.intersect(poly)[1] for i, poly in enumerate(world.elements)]
@@ -112,13 +113,34 @@ class Ray:
 
 
 class Polygon:
-    def __init__(self, a: Vector, b: Vector, c: Vector):
+    def __init__(self, a: Vector, b: Vector, c: Vector, surface: 'Surface'):
         self.a = a
         self.b = b
         self.c = c
+        self.surface = surface or Surface()
         self.normal_vector = (b-a).cross(c-a).norm()
 
     def is_inside(self, v: Vector) -> bool:
+        # Compute vectors
+        v0 = self.c - self.a
+        v1 = self.b - self.a
+        v2 = v - self.a
+
+        dot00 = v0.dot(v0)
+        dot01 = v0.dot(v1)
+        dot02 = v0.dot(v2)
+        dot11 = v1.dot(v1)
+        dot12 = v1.dot(v2)
+
+        # Compute barycentric coordinates
+        invDenom = 1 / (dot00 * dot11 - dot01 * dot01)
+        u = (dot11 * dot02 - dot01 * dot12) * invDenom
+        v = (dot00 * dot12 - dot01 * dot02) * invDenom
+
+        # Check if point is in triangle
+        return (u >= 0) and (v >= 0) and (u + v < 1)
+
+    def old_is_inside(self, v: Vector) -> bool:
         area = (self.b - self.a).cross(self.c-self.a).abs()/2
         alpha = (self.b - v).cross(self.c - v).abs() / (2*area)
         beta = (self.c - v).cross(self.a - v).abs() / (2*area)
@@ -126,13 +148,16 @@ class Polygon:
         return (0 <= alpha <= 1) and (0 <= beta <= 1) and (0 <= gamma <= 1)
 
     def transpose(self, vec: Vector) -> 'Polygon':
-        return Polygon(self.a + vec, self.b + vec, self.c + vec)
+        return Polygon(self.a + vec, self.b + vec, self.c + vec, self.surface)
 
     def rotate(self, angle: float, axis: 'Ray'):
-        return Polygon(self.a.rotate(angle, axis), self.b.rotate(angle, axis), self.c.rotate(angle, axis))
+        return Polygon(self.a.rotate(angle, axis), self.b.rotate(angle, axis), self.c.rotate(angle, axis), self.surface)
 
     def __eq__(self, other):
         return {self.a, self.b, self.c} == {other.a, other.b, other.c}
+
+    def __hash__(self):
+        return self.a.round(5).__hash__() + self.b.round(5).__hash__() + self.c.round(5).__hash__()
 
     def __repr__(self):
         return f"Polygon: {self.a.__repr__()} {self.b.__repr__()} {self.c.__repr__()}"
@@ -160,39 +185,51 @@ class Geometry:
         return set([vec for element in self.elements for vec in element.vectors()]) \
                == set([vec for element in other.elements for vec in element.vectors()])
 
+    def __hash__(self):
+        return sum([el.__hash__() for el in self.elements])
+
+    def __repr__(self):
+        return "Geometry: " + " ".join({vec.round(5).__repr__() for poly in self.elements for vec in poly.vectors()})
+
 
 class Square(Geometry):
-    def __init__(self, a: Vector, b: Vector, c: Vector, d: Vector):
-        super().__init__(*[Polygon(a, b, c), Polygon(b, c, d)])
+    def __init__(self, a: Vector, b: Vector, c: Vector, d: Vector, surface: 'Surface'):
+        super().__init__(*[Polygon(a, b, c, surface), Polygon(b, c, d, surface)])
 
 
 class Cube(Geometry):
-    def __init__(self, base: Vector, width: float):
+    def __init__(self, base: Vector, width: float, surface: 'Surface'):
         bottom = Square(
             base,
             base + Vector([width, 0, 0]),
             base + Vector([0, width, 0]),
-            base + Vector([width, width, 0]))
+            base + Vector([width, width, 0]), surface)
         top = bottom.transpose(Vector([0, 0, width]))
 
         front = Square(
             base,
             base + Vector([width, 0, 0]),
             base + Vector([0, 0, width]),
-            base + Vector([width, 0, width]))
+            base + Vector([width, 0, width]), surface)
         back = front.transpose(Vector([0, width, 0]))
 
         left = Square(
             base,
             base + Vector([0, width, 0]),
             base + Vector([0, 0, width]),
-            base + Vector([0, width, width]))
+            base + Vector([0, width, width]), surface)
         right = left.transpose(Vector([width, 0, 0]))
 
         super().__init__(*(bottom + top + left + right + back + front).elements)
 
     @classmethod
-    def from_center(cls, center: Vector, width: float):
+    def from_center(cls, center: Vector, width: float, surface: 'Surface'):
         base = center - Vector([width/2, width/2, width/2])
-        return cls(base, width)
+        return cls(base, width, surface)
 
+
+class Surface:
+    def __init__(self, k_ambient=0, k_diffuse=1, k_reflect=0):
+        self.k_ambient = k_ambient
+        self.k_diffuse = k_diffuse
+        self.k_reflect = k_reflect

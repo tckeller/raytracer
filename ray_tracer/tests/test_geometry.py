@@ -71,7 +71,7 @@ class TestRay(TestCase):
         poly3 = Polygon(Vector([1, -1, 1]), Vector([0, -1, -1]), Vector([-1, -1, -1]))
         world = Geometry(*[poly1, poly2, poly3])
 
-        reflection = a.multi_reflect(world, a.distances_to_polys(world))
+        reflection, _ = a.multi_reflect(world)
         self.assertEqual(reflection.offset, Vector([0, 1, 0]))
         self.assertEqual(reflection.direction, Vector([-1, -1, 0]))
 
@@ -94,6 +94,11 @@ class TestPolygon(TestCase):
 class TestGeometry(TestCase):
     def test_rotate(self):
         square = Square(Vector([10, 10, 0]), Vector([10, 12, 0]), Vector([12, 10, 0]), Vector([12, 12, 0]))
-
         rotation_axis = Ray(offset=Vector([11, 11, 0]), direction=Vector([0, 0, 1]))
         self.assertEqual(square, square.rotate(90, rotation_axis))
+
+    def test_rotate_cube(self):
+        cube = Cube.from_center(Vector([0, 0, 100]), 100)
+        rotation_axis1 = Ray(offset=Vector([0, 0, 100]), direction=Vector([0, 1, 0]))
+        rotation_axis2 = Ray(offset=Vector([0, 0, 100]), direction=Vector([1, 0, 0]))
+        self.assertEqual(cube.rotate(180, rotation_axis1).rotate(180, rotation_axis2), cube)
