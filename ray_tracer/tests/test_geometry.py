@@ -93,7 +93,8 @@ class TestPolygon(TestCase):
 
 class TestGeometry(TestCase):
     def test_rotate(self):
-        square = Square(Vector([10, 10, 0]), Vector([10, 12, 0]), Vector([12, 10, 0]), Vector([12, 12, 0]), Surface(1, 1, 0))
+        square = Square(Vector([10, 10, 0]), Vector([10, 12, 0]), Vector([12, 10, 0]), Vector([12, 12, 0]),
+                        Surface(1, 1, 0))
         rotation_axis = Ray(offset=Vector([11, 11, 0]), direction=Vector([0, 0, 1]))
         self.assertEqual(square, square.rotate(90, rotation_axis))
 
@@ -101,4 +102,41 @@ class TestGeometry(TestCase):
         cube = Cube.from_center(Vector([0, 0, 100]), 100, Surface(1, 1, 0))
         rotation_axis1 = Ray(offset=Vector([0, 0, 100]), direction=Vector([0, 1, 0]))
         rotation_axis2 = Ray(offset=Vector([0, 0, 100]), direction=Vector([1, 0, 0]))
-        #self.assertEqual(cube.rotate(180, rotation_axis1).rotate(180, rotation_axis2), cube)
+        # self.assertEqual(cube.rotate(180, rotation_axis1).rotate(180, rotation_axis2), cube)
+
+
+def test_reflect_formula():
+    ray_direction = Vector([1, 0, 0])
+    intersect_point = Vector([0, 0, 1])
+    normal_vector = Vector([-1, 0, 0])
+
+    reflected_ray = Ray.reflect_formula(ray_direction, intersect_point, normal_vector)
+    assert reflected_ray.offset == intersect_point
+    assert reflected_ray.direction == Vector([-1, 0, 0])
+
+def test_reflect_formula():
+    ray_direction = Vector([1, 0, 0])
+    intersect_point = Vector([0, 0, 1])
+    normal_vector = Vector([1, 0, 0])
+
+    reflected_ray = Ray.reflect_formula(ray_direction, intersect_point, normal_vector)
+    assert reflected_ray.offset == intersect_point
+    assert reflected_ray.direction == Vector([-1, 0, 0])
+
+def test_reflect_formula():
+    ray_direction = Vector([1, 1, 0])
+    intersect_point = Vector([0, 0, 1])
+    normal_vector = Vector([1, 0, 0])
+
+    reflected_ray = Ray.reflect_formula(ray_direction, intersect_point, normal_vector)
+    assert reflected_ray.offset == intersect_point
+    assert reflected_ray.direction.norm() == Vector([-1, 1, 0]).norm()
+
+def test_reflect_formula():
+    ray_direction = Vector([1, 1, 1])
+    intersect_point = Vector([0, 0, 1])
+    normal_vector = Vector([1, 0, 0])
+
+    reflected_ray = Ray.reflect_formula(ray_direction, intersect_point, normal_vector)
+    assert reflected_ray.offset == intersect_point
+    assert reflected_ray.direction.norm() == Vector([-1, 1, 1]).norm()
