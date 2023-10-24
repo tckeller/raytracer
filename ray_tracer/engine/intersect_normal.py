@@ -8,7 +8,7 @@ def all_distances(offset, direction, world):
     return distances
 
 def dot(a, b):
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+    return np.dot(a,b)
 
 def point_on_line(offset, direction, scaler):
     return offset + direction * scaler
@@ -19,12 +19,14 @@ def intersect(offset, direction, poly):
     if projection == 0:
         return -1.0
 
-    distance = dot((poly[0] - offset),poly[3]) / projection
+    distance = dot((poly[0] - offset), poly[3]) / projection
+    return distance
     intersect = point_on_line(offset, direction, distance)
     if not is_inside(poly[0:3], intersect):
         return -1.0
     else:
         return distance
+
 
 def is_inside(poly, v):
     # Compute vectors

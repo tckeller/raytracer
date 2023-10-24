@@ -1,72 +1,57 @@
+import numpy
 import numpy as np
 from typing import Union, List, Tuple, Optional
 from scipy.spatial.transform import Rotation
 from math import acos, cos, sin, sqrt
 from ray_tracer.engine.intersect import all_distances
 
+class Vector(np.ndarray):
 
-class Vector:
-    def __init__(self, vec: Union[List[float], np.array]):
-        self.vec = np.array(vec).reshape(3).astype(np.double)
+    def __new__(cls, input_array, info=None):
+        obj = np.asarray(input_array).view(cls)
+        return obj
+
+    @staticmethod
+    def from_list(vec: List[float]):
+        return Vector(np.array(vec).astype(np.float64))
 
     def distance(self, other: 'Vector') -> 'Vector':
         return (self - other).abs()
 
     def cross(self, other: 'Vector') -> 'Vector':
-        return Vector([self.vec[1]*other.vec[2]-self.vec[2]*other.vec[1],
-                       self.vec[2]*other.vec[0]-self.vec[0]*other.vec[2],
-                       self.vec[0]*other.vec[1]-self.vec[1]*other.vec[0]])
-
-    def dot(self, other: 'Vector') -> float:
-        return np.dot(self.vec.T, other.vec)
-
-    def __add__(self, other: 'Vector') -> 'Vector':
-        return Vector(self.vec + other.vec)
-
-    def __sub__(self, other: 'Vector') -> 'Vector':
-        return Vector(self.vec - other.vec)
-
-    def __floordiv__(self, other: float) -> 'Vector':
-        return Vector(self.vec / other)
-
-    def __truediv__(self, other: float) -> 'Vector':
-        return Vector(self.vec / other)
-
-    def __mul__(self, other: float) -> 'Vector':
-        return Vector(self.vec * other)
-
-    def __eq__(self, other: 'Vector') -> bool:
-        return np.array_equal(self.vec, other.vec)
-
-    def __str__(self) -> str:
-        return f"Vector({self.vec[0]}, {self.vec[1]}, {self.vec[2]})"
-
-    def __repr__(self) -> str:
-        return self.__str__()
-
-    def __hash__(self):
-        return int(self.vec.sum())
+        return Vector(np.cross(self, other))
 
     def abs(self):
-        return np.linalg.norm(self.vec)
+        return np.linalg.norm(self)
 
     def norm(self) -> 'Vector':
         return self / self.abs()
 
     def rotate(self, angle: float, axis: 'Ray'):
-
         rotation_radians = np.radians(angle)
         rotation_axis = axis.direction.norm()
         rotation_vector = rotation_axis * rotation_radians
-        rotation = Rotation.from_rotvec(rotation_vector.vec)
-        rotated_vec = Vector(rotation.apply((self - axis.offset).vec)) + axis.offset
+        rotation = Rotation.from_rotvec(rotation_vector)
+        rotated_vec = Vector(rotation.apply((self - axis.offset)).astype(np.float64)) + axis.offset
         return rotated_vec
-
-    def round(self, decimals: int):
-        return Vector(self.vec.round(decimals))
 
     def angle(self, other: 'Vector'):
         return (acos(self.dot(other) / (self.abs()*other.abs())))*(360/(2*np.pi))
+
+    def elementwise_mul(self, other: 'Vector'):
+        return numpy.multiply(self, other)
+
+    def __str__(self) -> str:
+        return f"Vector({self[0]}, {self[1]}, {self[2]})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def __hash__(self):
+        return int(self.sum())
+
+    def __eq__(self, other: 'Vector') -> bool:
+        return np.array_equal(self, other)
 
 
 class Ray:
@@ -78,13 +63,17 @@ class Ray:
         return self.offset + self.direction * scaler, scaler
 
     def offset_distance(self, point: Vector):
-        self.offset.distance(point)
+        return self.offset.distance(point)
 
     def intersect(self, poly: 'Polygon') -> Tuple[Optional[Vector], Optional[float]]:
-        intersect, distance = self.point_on_line(
-            (poly.a - self.offset).dot(poly.normal_vector) / (self.direction.dot(poly.normal_vector))
-        )
-        return (None, None) if not poly.is_inside(intersect) else (intersect, distance)
+        if isinstance(poly, Polygon):
+            intersect, distance = self.point_on_line(
+                (poly.a - self.offset).dot(poly.normal_vec) / (self.direction.dot(poly.normal_vec))
+            )
+            return intersect, distance
+        if isinstance(poly, Sphere):
+            intersect_vector = poly.closest_intersect_distance(self)
+            return (None, None) if intersect_vector is None else (intersect_vector, self.offset_distance(intersect_vector))
 
     def first_intersect(self, world: 'Geometry') -> Union[None, 'Polygon']:
         distances = self.distances_to_polys(world)
@@ -96,38 +85,66 @@ class Ray:
     def distances_to_polys(self, world):
 
         # distances = [self.intersect(poly)[1] for i, poly in enumerate(world.elements)]
-        distances = all_distances(self.offset.vec, self.direction.vec, world.polys_to_numpy())
-        distances += [sp.closest_intersect(self) for sp in world.spheres()]
+        distances = list(all_distances(self.offset, self.direction, world.polys_to_numpy()))
+        if len(world.spheres()) > 0:
+            distances += [sp.closest_intersect_distance(self, return_distance=True) for sp in world.spheres()]
         distances = [d if d is not None and d > 0.00001 else np.NAN for d in distances]
         return distances
 
-    def refract(self, geometry_element: Union['Polygon', 'Sphere']) -> Union[None, 'Ray']:
-        offset = self.intersect(geometry_element)[0]
-
-        normal = geometry_element.normal_vector(self)
-        if self.direction.dot(geometry_element.normal_vector(self)) > 0:
-            normal = geometry_element.normal_vector(self)*(-1)
-
-        c_refr = 1/geometry_element.surface.refraction_streangth
-
-        cos_angle = self.direction.norm().dot(normal)
-
-        direction = self.direction*c_refr \
-            + normal*(c_refr*cos_angle - sqrt(1-(c_refr*c_refr*(1-cos_angle*cos_angle))))
-
-        return Ray(offset, direction)
-
-    def reflect(self, geometry_element: Union['Polygon', 'Sphere']) -> Union[None, 'Ray']:
-        offset = self.intersect(geometry_element)[0]
-
-        directed_normal = geometry_element.normal_vector(self) \
-            if self.direction.angle(geometry_element.normal_vector(self) ) > 90 \
-            else geometry_element.normal_vector(self)*-1
-
+    def refract(self, geometry_element: Union['Polygon', 'Sphere'], intersect_point) -> Union[None, 'Ray']:
+        # Calculate the intersection point; should handle the possibility of no intersection.
+        offset = intersect_point
         if offset is None:
+            return None, False
+
+        # Calculate the normal at the intersection point.
+        normal = geometry_element.normal_vector(offset)  # Assuming normal_vector takes a point.
+
+        # Identify whether the ray is entering or exiting the medium.
+        is_exiting = self.direction.dot(normal) > 0
+        if is_exiting:
+            # If exiting, the normal vector should be reversed.
+            normal = -normal
+
+        # Indices of refraction.
+        n1 = 1.0  # Assuming air or vacuum outside the material.
+        n2 = geometry_element.surface.refraction_streangth  # Assuming this is the correct property.
+
+        # Refractive indices ratio depends on whether the ray is entering or exiting the medium.
+        eta = n1 / n2 if is_exiting else n2 / n1
+
+        # cos(theta) calculation.
+        cosi = -normal.dot(self.direction)
+        k = 1 - eta * eta * (1 - cosi * cosi)
+
+        # Check for total internal reflection.
+        if k < 0:
+            # Total internal reflection occurred; no refraction.
+            return None, True
+
+        # Calculate refracted ray direction.
+        direction = (self.direction * eta) + normal * (eta * cosi - sqrt(k))
+
+        # Create the refracted ray.
+        refracted_ray = Ray(offset, direction)
+
+        return refracted_ray, False
+
+    def reflect(self, geometry_element: Union['Polygon', 'Sphere'], intersect_point) -> Union[None, 'Ray']:
+        if intersect_point is None:
             return None
-        direction = self.direction - directed_normal*(self.direction.dot(directed_normal)*2)
-        return Ray(offset=offset, direction=direction)
+
+        normal_vector = geometry_element.normal_vector(intersect_point)
+        return self.reflect_formula(self.direction, intersect_point, normal_vector)
+
+    @staticmethod
+    def reflect_formula(ray_direction, intersect_point, normal_vector):
+        if (-ray_direction).dot(normal_vector) < 0:
+            normal_vector = -normal_vector
+        # Reflect the direction around the normal
+        reflected_direction = ray_direction - (normal_vector * 2 * (ray_direction.dot(normal_vector)))
+        # Create a new Ray with the reflected direction
+        return Ray(offset=intersect_point, direction=reflected_direction)
 
     def __repr__(self):
         return f"Ray({self.offset.__repr__()} + x * {self.direction.__repr__()})"
@@ -185,7 +202,7 @@ class Polygon:
 
 class Geometry:
     elements: List[Union[Polygon, 'Sphere']]
-
+    polys_np = None
     def __init__(self, *polys: Polygon):
         self.elements = list(polys)
 
@@ -209,11 +226,20 @@ class Geometry:
         return "Geometry: " + " ".join({vec.round(5).__repr__() for poly in self.elements for vec in poly.vectors()})
 
     def polys_to_numpy(self):
-        return np.array([np.array([el.a.vec, el.b.vec, el.c.vec, el.normal_vec.vec])
-                         for el in self.elements if type(el) == Polygon])
+        if self.polys_np is None:
+            self.polys_np=np.array([np.array([el.a, el.b, el.c, el.normal_vec])
+                                    for el in self.elements if type(el) == Polygon]).astype(np.float64)
+        return self.polys_np
+
+    def spheres_to_numpy(self):
+        if not self.spheres_np:
+            self.spheres_np=np.array([np.array([el.pos, el.radius])
+                                    for el in self.elements if type(el) == Sphere])
+            return self.polys_np
 
     def spheres(self):
         return [el for el in self.elements if type(el) == Sphere]
+
 
 class Square(Geometry):
     def __init__(self, a: Vector, b: Vector, c: Vector, d: Vector, surface: 'Surface'):
@@ -224,30 +250,30 @@ class Cube(Geometry):
     def __init__(self, base: Vector, width: float, surface: 'Surface'):
         bottom = Square(
             base,
-            base + Vector([width, 0, 0]),
-            base + Vector([0, width, 0]),
-            base + Vector([width, width, 0]), surface)
-        top = bottom.transpose(Vector([0, 0, width]))
+            base + Vector.from_list([width, 0, 0]),
+            base + Vector.from_list([0, width, 0]),
+            base + Vector.from_list([width, width, 0]), surface)
+        top = bottom.transpose(Vector.from_list([0, 0, width]))
 
         front = Square(
             base,
-            base + Vector([width, 0, 0]),
-            base + Vector([0, 0, width]),
-            base + Vector([width, 0, width]), surface)
-        back = front.transpose(Vector([0, width, 0]))
+            base + Vector.from_list([width, 0, 0]),
+            base + Vector.from_list([0, 0, width]),
+            base + Vector.from_list([width, 0, width]), surface)
+        back = front.transpose(Vector.from_list([0, width, 0]))
 
         left = Square(
             base,
-            base + Vector([0, width, 0]),
-            base + Vector([0, 0, width]),
-            base + Vector([0, width, width]), surface)
-        right = left.transpose(Vector([width, 0, 0]))
+            base + Vector.from_list([0, width, 0]),
+            base + Vector.from_list([0, 0, width]),
+            base + Vector.from_list([0, width, width]), surface)
+        right = left.transpose(Vector.from_list([width, 0, 0]))
 
         super().__init__(*(bottom + top + left + right + back + front).elements)
 
     @classmethod
     def from_center(cls, center: Vector, width: float, surface: 'Surface'):
-        base = center - Vector([width/2, width/2, width/2])
+        base = center - Vector.from_list([width/2, width/2, width/2])
         return cls(base, width, surface)
 
 
@@ -257,21 +283,32 @@ class Sphere:
         self.radius = radius
         self.surface = surface
 
-    def closest_intersect(self, ray: Ray):
+    def closest_intersect_distance(self, ray: Ray, return_distance: bool = False) -> Optional[Union[Vector, float]]:
         """ Will always return the closest intersect """
         projection = ray.direction.dot(ray.offset - self.pos)
         root_content = pow(projection, 2) - (pow((ray.offset - self.pos).abs(), 2) - self.radius*self.radius)
         if root_content < 0:
             return None
         first = -projection - sqrt(root_content)
-        if first > 0:
-            return first
         second = -projection + sqrt(root_content)
-        if second > 0:
-            return second
-        return None
+        if first > 0.0001 and second > 0.0001:
+            intersect_point_on_ray = min(first, second)
+        elif first > 0.0001:
+            intersect_point_on_ray = first
+        elif second > 0.0001:
+            intersect_point_on_ray = second
+        else:
+            return None
+        if intersect_point_on_ray:
+            intersect_vector, distance = ray.point_on_line(intersect_point_on_ray)
+            if return_distance:
+                return distance
+            else:
+                return intersect_vector
+        else:
+            return None
 
-    def norm(self, intersect: Vector):
+    def normal_vector(self, intersect: Vector):
         return (intersect - self.pos).norm()
 
 
@@ -281,6 +318,6 @@ class Surface:
         self.k_ambient = k_ambient
         self.k_diffuse = k_diffuse
         self.k_reflect = k_reflect
-        self.color = color or Vector([1, 1, 1])
+        self.color = color if color is not None else Vector.from_list([1, 1, 1])
         self.k_refraction = k_refraction
         self.refraction_streangth = refraction_streangth
