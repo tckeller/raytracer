@@ -3,7 +3,7 @@ from concurrent import futures
 from ray_tracer.engine.light import *
 import time
 from tqdm import tqdm
-
+import math
 
 def timing(f):
     def wrap(*args, **kwargs):
@@ -23,13 +23,13 @@ class Tracer:
         self.screen = screen
 
     @timing
-    def run_parallel(self, iterations=2):
+    def run_parallel(self, iterations=2, light_iterations=1):
         pixels = np.zeros((self.screen.res_x, self.screen.res_y, 3))
 
         iteration = 0
         with futures.ProcessPoolExecutor(max_workers=32) as executor:
             pixel_futures = [[
-                self.submit_async(self.screen.screen[i][j], executor, iterations)
+                self.submit_async(self.screen.screen[i][j], executor, iterations, light_iterations)
                 for j in range(self.screen.res_y)] for i in range(self.screen.res_x)]
 
             for i in range(self.screen.res_x):
@@ -41,18 +41,21 @@ class Tracer:
 
         return pixels
 
-    def process_ray_batch(self, rays_batch, iterations):
+    def process_ray_batch(self, rays_batch, iterations, light_iterations):
         # This function processes a list of rays corresponding to a batch of pixels
         batch_results = []
         for ray in rays_batch:
             color = Tracer.reflect_and_measure(ray, self.world, self.lights,
-                                               iterations)  # This is your actual ray processing
+                                               iterations, 1, light_iterations)  # This is your actual ray processing
             batch_results.append(color)  # Assuming color is a Vector; adjust as necessary
 
         return batch_results
 
     @timing
-    def run_parallel_batched(self, iterations=2, batch_size=10):
+    def run_parallel_batched(self, iterations=2, light_iterations=1, batch_size=None):
+        if batch_size is None:
+            batch_size = int(self.screen.res_y / math.sqrt(30))
+
         pixels = np.zeros((self.screen.res_x, self.screen.res_y, 3))
 
         # Calculate the total number of batches
@@ -72,7 +75,7 @@ class Tracer:
                                       range(start_x, min(start_x + batch_size, self.screen.res_x))
                                       for j in range(start_y, min(start_y + batch_size, self.screen.res_y))]
 
-                        future = executor.submit(self.process_ray_batch, rays_batch, iterations)
+                        future = executor.submit(self.process_ray_batch, rays_batch, iterations, light_iterations)
                         future_to_pixel[future] = (start_x, start_y)
 
                 # As tasks complete, we update the progress bar.
@@ -91,10 +94,10 @@ class Tracer:
 
         return pixels
 
-    def submit_async(self, ray: Ray, executor, iterations):
-        return executor.submit(Tracer.reflect_and_measure, ray, self.world, self.lights, iterations)
+    def submit_async(self, ray: Ray, executor, iterations, light_iterations):
+        return executor.submit(Tracer.reflect_and_measure, ray, self.world, self.lights, iterations, 1, light_iterations)
 
-    def run(self, iterations=2):
+    def run(self, iterations=2, light_iterations=1):
         pixels = np.zeros((self.screen.res_x, self.screen.res_y, 3))
 
         iteration = 0
@@ -104,12 +107,12 @@ class Tracer:
                 if iteration % 20 == 1:
                     print(f"{iteration*100/(self.screen.res_x*self.screen.res_y)} %")
                 pixels[i, j, :] = self.reflect_and_measure(self.screen.screen[i][j], self.world, self.lights,
-                                                        iterations)
+                                                        iterations, 1, light_iterations)
 
         return pixels
 
     @staticmethod
-    def reflect_and_measure(ray: Ray, world: Geometry, lights: List['LightSource'], iterations: int) -> Vector:
+    def reflect_and_measure(ray: Ray, world: Geometry, lights: List['LightSource'], iterations: int, is_inside: bool = False, light_iterations=1) -> Vector:
 
         if ray is None:
             return Vector.from_list([0, 0, 0])
@@ -121,45 +124,78 @@ class Tracer:
         else:
             intersect_point, intersec_dist = ray.intersect(poly)
 
-        strength = Tracer._strength_formula(ray, intersect_point, lights, poly, world)
+        strength = Tracer._strength_formula(ray, intersect_point, lights, poly, world, light_iterations)
         total_reflect = False
         if poly.surface.k_refraction > 0:
-            ray_refract, total_reflect = ray.refract(poly, intersect_point)
+            ray_refract, total_reflect = ray.refract(poly, intersect_point, is_inside)
             if ray_refract:
-                strength += (Tracer.reflect_and_measure(ray_refract, world, lights, iterations-1)*poly.surface.k_refraction).elementwise_mul(poly.surface.color)
+                strength += (Tracer.reflect_and_measure(ray_refract, world, lights, iterations-1, poly.surface.refraction_strength)*poly.surface.k_refraction).elementwise_mul(poly.surface.color(intersect_point))
         if poly.surface.k_reflect > 0 or total_reflect:
             ray_reflect = ray.reflect(poly, intersect_point)
             reflect_coeff = 1 if total_reflect else poly.surface.k_reflect
-            strength += (Tracer.reflect_and_measure(ray_reflect, world, lights, iterations-1)*reflect_coeff).elementwise_mul(poly.surface.color)
+            strength += (Tracer.reflect_and_measure(ray_reflect, world, lights, iterations-1, not is_inside)*reflect_coeff).elementwise_mul(poly.surface.color(intersect_point))
 
         strength = Vector([min(val, 255) for val in strength])
         return strength
 
     @staticmethod
-    def _strength_formula(ray: Ray, intersect_point: Vector, lights: List['LightSource'], poly: Polygon, world: Geometry):
+    def _strength_formula(ray: Ray, intersect_point: Vector, lights: List['LightSource'], poly: Polygon, world: Geometry, light_iterations: int = 1):
         sum_strength = poly.surface.k_ambient
 
         for light in lights:
-            shadows = Ray(offset=intersect_point, direction=light.pos - intersect_point).distances_to_polys(world)
+            min_light_iterations = 10  # minimum number of iterations to get a baseline
+            tolerance = 4  # variance tolerance level to determine if more samples are needed
 
-            distance_to_light = intersect_point.distance(light.pos)
+            sum_light_iterations = 0.0
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                if np.nanmin(shadows) < distance_to_light:
-                    # shadow thrower closer than light
+            # Variables for Welford's method
+            mean = 0.0
+            M2 = 0.0
+            variance = 0.0
+
+            for light_iter in range(1, light_iterations + 1):  # light_iter should start from 1 for this algorithm
+
+                light_pos = light.random_pos_on_surface()
+
+                normal_vector = poly.normal_vector(intersect_point)
+                if (-ray.direction).dot(normal_vector) < 0:
+                    normal_vector = -normal_vector
+
+                cos_angle = (normal_vector.dot((light_pos - intersect_point).norm()))
+                if cos_angle < 0:
                     continue
 
-            normal_vector = poly.normal_vector(intersect_point)
-            if (-ray.direction).dot(normal_vector) < 0:
-                normal_vector = -normal_vector
+                shadows = Ray(offset=intersect_point, direction=light_pos - intersect_point).distances_to_polys(world)
 
-            strength = light.strength * \
-                poly.surface.k_diffuse * max(0, (normal_vector.dot((light.pos - intersect_point).norm())))
+                distance_to_light = intersect_point.distance(light_pos)
 
-            sum_strength += strength
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    if np.nanmin(shadows) < distance_to_light:
+                        # shadow thrower closer than light
+                        continue
 
-        return poly.surface.color*sum_strength
+                # Calculate light contribution
+                light_contribution = light.strength * poly.surface.k_diffuse * cos_angle
+                sum_light_iterations += light_contribution
+
+                # Welford's online variance calculation
+                delta = light_contribution - mean
+                mean += delta / light_iter
+                delta2 = light_contribution - mean
+                M2 += delta * delta2  # This is the sum of squared differences from the current mean
+
+                # Ensure we have enough samples before making decisions based on variance
+                if light_iter >= min_light_iterations:
+                    variance = M2 / (light_iter - 1)  # Use a sample variance formula, with "n-1" in the denominator
+
+                    if variance < tolerance:
+                        break  # If the variance is below the threshold, we assume the estimate is good enough
+
+            # Final average based on the actual number of iterations
+            sum_strength += sum_light_iterations / light_iter
+
+        return poly.surface.color(intersect_point)*sum_strength
 
 
 class Screen:

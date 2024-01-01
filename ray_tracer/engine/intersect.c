@@ -2644,6 +2644,154 @@ static void __Pyx_RaiseBufferIndexError(int axis);
 /* BufferIndexErrorNogil.proto */
 static void __Pyx_RaiseBufferIndexErrorNogil(int axis);
 
+/* pybytes_as_double.proto */
+static double __Pyx_SlowPyString_AsDouble(PyObject *obj);
+static double __Pyx__PyBytes_AsDouble(PyObject *obj, const char* start, Py_ssize_t length);
+static CYTHON_INLINE double __Pyx_PyBytes_AsDouble(PyObject *obj) {
+    return __Pyx__PyBytes_AsDouble(obj, PyBytes_AS_STRING(obj), PyBytes_GET_SIZE(obj));
+}
+static CYTHON_INLINE double __Pyx_PyByteArray_AsDouble(PyObject *obj) {
+    return __Pyx__PyBytes_AsDouble(obj, PyByteArray_AS_STRING(obj), PyByteArray_GET_SIZE(obj));
+}
+
+/* pyunicode_as_double.proto */
+#if PY_MAJOR_VERSION >= 3 && !CYTHON_COMPILING_IN_PYPY
+static const char* __Pyx__PyUnicode_AsDouble_Copy(const void* data, const int kind, char* buffer, Py_ssize_t start, Py_ssize_t end) {
+    int last_was_punctuation;
+    Py_ssize_t i;
+    last_was_punctuation = 1;
+    for (i=start; i <= end; i++) {
+        Py_UCS4 chr = PyUnicode_READ(kind, data, i);
+        int is_punctuation = (chr == '_') | (chr == '.');
+        *buffer = (char)chr;
+        buffer += (chr != '_');
+        if (unlikely(chr > 127)) goto parse_failure;
+        if (unlikely(last_was_punctuation & is_punctuation)) goto parse_failure;
+        last_was_punctuation = is_punctuation;
+    }
+    if (unlikely(last_was_punctuation)) goto parse_failure;
+    *buffer = '\0';
+    return buffer;
+parse_failure:
+    return NULL;
+}
+static double __Pyx__PyUnicode_AsDouble_inf_nan(const void* data, int kind, Py_ssize_t start, Py_ssize_t length) {
+    int matches = 1;
+    Py_UCS4 chr;
+    Py_UCS4 sign = PyUnicode_READ(kind, data, start);
+    int is_signed = (sign == '-') | (sign == '+');
+    start += is_signed;
+    length -= is_signed;
+    switch (PyUnicode_READ(kind, data, start)) {
+        #ifdef Py_NAN
+        case 'n':
+        case 'N':
+            if (unlikely(length != 3)) goto parse_failure;
+            chr = PyUnicode_READ(kind, data, start+1);
+            matches &= (chr == 'a') | (chr == 'A');
+            chr = PyUnicode_READ(kind, data, start+2);
+            matches &= (chr == 'n') | (chr == 'N');
+            if (unlikely(!matches)) goto parse_failure;
+            return (sign == '-') ? -Py_NAN : Py_NAN;
+        #endif
+        case 'i':
+        case 'I':
+            if (unlikely(length < 3)) goto parse_failure;
+            chr = PyUnicode_READ(kind, data, start+1);
+            matches &= (chr == 'n') | (chr == 'N');
+            chr = PyUnicode_READ(kind, data, start+2);
+            matches &= (chr == 'f') | (chr == 'F');
+            if (likely(length == 3 && matches))
+                return (sign == '-') ? -Py_HUGE_VAL : Py_HUGE_VAL;
+            if (unlikely(length != 8)) goto parse_failure;
+            chr = PyUnicode_READ(kind, data, start+3);
+            matches &= (chr == 'i') | (chr == 'I');
+            chr = PyUnicode_READ(kind, data, start+4);
+            matches &= (chr == 'n') | (chr == 'N');
+            chr = PyUnicode_READ(kind, data, start+5);
+            matches &= (chr == 'i') | (chr == 'I');
+            chr = PyUnicode_READ(kind, data, start+6);
+            matches &= (chr == 't') | (chr == 'T');
+            chr = PyUnicode_READ(kind, data, start+7);
+            matches &= (chr == 'y') | (chr == 'Y');
+            if (unlikely(!matches)) goto parse_failure;
+            return (sign == '-') ? -Py_HUGE_VAL : Py_HUGE_VAL;
+        case '.': case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+            break;
+        default:
+            goto parse_failure;
+    }
+    return 0.0;
+parse_failure:
+    return -1.0;
+}
+static double __Pyx_PyUnicode_AsDouble_WithSpaces(PyObject *obj) {
+    double value;
+    const char *last;
+    char *end;
+    Py_ssize_t start, length = PyUnicode_GET_LENGTH(obj);
+    const int kind = PyUnicode_KIND(obj);
+    const void* data = PyUnicode_DATA(obj);
+    start = 0;
+    while (Py_UNICODE_ISSPACE(PyUnicode_READ(kind, data, start)))
+        start++;
+    while (start < length - 1 && Py_UNICODE_ISSPACE(PyUnicode_READ(kind, data, length - 1)))
+        length--;
+    length -= start;
+    if (unlikely(length <= 0)) goto fallback;
+    value = __Pyx__PyUnicode_AsDouble_inf_nan(data, kind, start, length);
+    if (unlikely(value == -1.0)) goto fallback;
+    if (value != 0.0) return value;
+    if (length < 40) {
+        char number[40];
+        last = __Pyx__PyUnicode_AsDouble_Copy(data, kind, number, start, start + length);
+        if (unlikely(!last)) goto fallback;
+        value = PyOS_string_to_double(number, &end, NULL);
+    } else {
+        char *number = (char*) PyMem_Malloc((length + 1) * sizeof(char));
+        if (unlikely(!number)) goto fallback;
+        last = __Pyx__PyUnicode_AsDouble_Copy(data, kind, number, start, start + length);
+        if (unlikely(!last)) {
+            PyMem_Free(number);
+            goto fallback;
+        }
+        value = PyOS_string_to_double(number, &end, NULL);
+        PyMem_Free(number);
+    }
+    if (likely(end == last) || (value == (double)-1 && PyErr_Occurred())) {
+        return value;
+    }
+fallback:
+    return __Pyx_SlowPyString_AsDouble(obj);
+}
+#endif
+static CYTHON_INLINE double __Pyx_PyUnicode_AsDouble(PyObject *obj) {
+#if PY_MAJOR_VERSION >= 3 && !CYTHON_COMPILING_IN_PYPY
+    if (unlikely(__Pyx_PyUnicode_READY(obj) == -1))
+        return (double)-1;
+    if (likely(PyUnicode_IS_ASCII(obj))) {
+        const char *s;
+        Py_ssize_t length;
+        s = PyUnicode_AsUTF8AndSize(obj, &length);
+        return __Pyx__PyBytes_AsDouble(obj, s, length);
+    }
+    return __Pyx_PyUnicode_AsDouble_WithSpaces(obj);
+#else
+    return __Pyx_SlowPyString_AsDouble(obj);
+#endif
+}
+
+/* pystring_as_double.proto */
+static CYTHON_INLINE double __Pyx_PyString_AsDouble(PyObject *obj) {
+    #if PY_MAJOR_VERSION >= 3
+    (void)__Pyx_PyBytes_AsDouble;
+    return __Pyx_PyUnicode_AsDouble(obj);
+    #else
+    (void)__Pyx_PyUnicode_AsDouble;
+    return __Pyx_PyBytes_AsDouble(obj);
+    #endif
+}
+
 /* PyObject_GenericGetAttrNoDict.proto */
 #if CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP && PY_VERSION_HEX < 0x03070000
 static CYTHON_INLINE PyObject* __Pyx_PyObject_GenericGetAttrNoDict(PyObject* obj, PyObject* attr_name);
@@ -2937,6 +3085,10 @@ static CYTHON_INLINE __Pyx_memviewslice __Pyx_PyObject_to_MemoryviewSlice_ds_dou
 /* ObjectToMemviewSlice.proto */
 static CYTHON_INLINE __Pyx_memviewslice __Pyx_PyObject_to_MemoryviewSlice_dsds_double(PyObject *, int writable_flag);
 
+/* MemviewDtypeToObject.proto */
+static CYTHON_INLINE PyObject *__pyx_memview_get_double(const char *itemp);
+static CYTHON_INLINE int __pyx_memview_set_double(const char *itemp, PyObject *obj);
+
 /* RealImag.proto */
 #if CYTHON_CCOMPLEX
   #ifdef __cplusplus
@@ -3153,6 +3305,10 @@ static CYTHON_INLINE int __pyx_f_5numpy_import_array(void); /*proto*/
 /* Module declarations from "cython.view" */
 static struct __pyx_array_obj *__pyx_array_new(PyObject *, Py_ssize_t, char *, char *, char *); /*proto*/
 
+/* Module declarations from "cython.dataclasses" */
+
+/* Module declarations from "cython" */
+
 /* Module declarations from "libc.math" */
 
 /* Module declarations from "ray_tracer.engine.intersect" */
@@ -3232,6 +3388,7 @@ static const char __pyx_k_O[] = "O";
 static const char __pyx_k_T[] = "T{";
   static const char __pyx_k_c[] = "c";
   static const char __pyx_k_d[] = "d";
+  static const char __pyx_k_i[] = "i";
   static const char __pyx_k__2[] = ".";
   static const char __pyx_k__3[] = "*";
   static const char __pyx_k__6[] = "'";
@@ -3239,15 +3396,22 @@ static const char __pyx_k_T[] = "T{";
   static const char __pyx_k__9[] = "^";
   static const char __pyx_k_gc[] = "gc";
   static const char __pyx_k_id[] = "id";
+  static const char __pyx_k_t1[] = "t1";
+  static const char __pyx_k_t2[] = "t2";
+  static const char __pyx_k_t3[] = "t3";
+  static const char __pyx_k_t4[] = "t4";
+  static const char __pyx_k_t5[] = "t5";
+  static const char __pyx_k_t6[] = "t6";
   static const char __pyx_k__10[] = "";
   static const char __pyx_k__11[] = ":";
 static const char __pyx_k__12[] = "}";
 static const char __pyx_k__13[] = "(";
 static const char __pyx_k__14[] = ",";
-static const char __pyx_k__33[] = "?";
+static const char __pyx_k__35[] = "?";
 static const char __pyx_k_abc[] = "abc";
 static const char __pyx_k_and[] = " and ";
 static const char __pyx_k_got[] = " (got ";
+static const char __pyx_k_inf[] = "inf";
 static const char __pyx_k_new[] = "__new__";
 static const char __pyx_k_obj[] = "obj";
 static const char __pyx_k_sys[] = "sys";
@@ -3265,6 +3429,8 @@ static const char __pyx_k_spec[] = "__spec__";
 static const char __pyx_k_step[] = "step";
 static const char __pyx_k_stop[] = "stop";
 static const char __pyx_k_test[] = "__test__";
+static const char __pyx_k_tmax[] = "tmax";
+static const char __pyx_k_tmin[] = "tmin";
 static const char __pyx_k_ASCII[] = "ASCII";
 static const char __pyx_k_class[] = "__class__";
 static const char __pyx_k_count[] = "count";
@@ -3297,6 +3463,8 @@ static const char __pyx_k_fortran[] = "fortran";
 static const char __pyx_k_memview[] = "memview";
 static const char __pyx_k_Ellipsis[] = "Ellipsis";
 static const char __pyx_k_Sequence[] = "Sequence";
+static const char __pyx_k_aabb_max[] = "aabb_max";
+static const char __pyx_k_aabb_min[] = "aabb_min";
 static const char __pyx_k_getstate[] = "__getstate__";
 static const char __pyx_k_itemsize[] = "itemsize";
 static const char __pyx_k_pyx_type[] = "__pyx_type";
@@ -3313,10 +3481,12 @@ static const char __pyx_k_IndexError[] = "IndexError";
 static const char __pyx_k_ValueError[] = "ValueError";
 static const char __pyx_k_pyx_result[] = "__pyx_result";
 static const char __pyx_k_pyx_vtable[] = "__pyx_vtable__";
+static const char __pyx_k_ray_origin[] = "ray_origin";
 static const char __pyx_k_ImportError[] = "ImportError";
 static const char __pyx_k_MemoryError[] = "MemoryError";
 static const char __pyx_k_PickleError[] = "PickleError";
 static const char __pyx_k_collections[] = "collections";
+static const char __pyx_k_dir_fraction[] = "dir_fraction";
 static const char __pyx_k_initializing[] = "_initializing";
 static const char __pyx_k_is_coroutine[] = "_is_coroutine";
 static const char __pyx_k_pyx_checksum[] = "__pyx_checksum";
@@ -3324,6 +3494,7 @@ static const char __pyx_k_stringsource[] = "<stringsource>";
 static const char __pyx_k_version_info[] = "version_info";
 static const char __pyx_k_all_distances[] = "all_distances";
 static const char __pyx_k_class_getitem[] = "__class_getitem__";
+static const char __pyx_k_ray_direction[] = "ray_direction";
 static const char __pyx_k_reduce_cython[] = "__reduce_cython__";
 static const char __pyx_k_AssertionError[] = "AssertionError";
 static const char __pyx_k_View_MemoryView[] = "View.MemoryView";
@@ -3336,6 +3507,7 @@ static const char __pyx_k_pyx_unpickle_Enum[] = "__pyx_unpickle_Enum";
 static const char __pyx_k_asyncio_coroutines[] = "asyncio.coroutines";
 static const char __pyx_k_cline_in_traceback[] = "cline_in_traceback";
 static const char __pyx_k_strided_and_direct[] = "<strided and direct>";
+static const char __pyx_k_ray_intersects_aabb[] = "ray_intersects_aabb";
 static const char __pyx_k_strided_and_indirect[] = "<strided and indirect>";
 static const char __pyx_k_Invalid_shape_in_axis[] = "Invalid shape in axis ";
 static const char __pyx_k_contiguous_and_direct[] = "<contiguous and direct>";
@@ -3411,7 +3583,8 @@ static PyObject *__pyx_pf___pyx_memoryviewslice___reduce_cython__(CYTHON_UNUSED 
 static PyObject *__pyx_pf___pyx_memoryviewslice_2__setstate_cython__(CYTHON_UNUSED struct __pyx_memoryviewslice_obj *__pyx_v_self, CYTHON_UNUSED PyObject *__pyx_v___pyx_state); /* proto */
 static PyObject *__pyx_pf_15View_dot_MemoryView___pyx_unpickle_Enum(CYTHON_UNUSED PyObject *__pyx_self, PyObject *__pyx_v___pyx_type, long __pyx_v___pyx_checksum, PyObject *__pyx_v___pyx_state); /* proto */
 static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_all_distances(CYTHON_UNUSED PyObject *__pyx_self, PyArrayObject *__pyx_v_offset, PyArrayObject *__pyx_v_direction, PyArrayObject *__pyx_v_world); /* proto */
-static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2intersect(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_offset, __Pyx_memviewslice __pyx_v_direction, __Pyx_memviewslice __pyx_v_poly); /* proto */
+static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2ray_intersects_aabb(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_ray_origin, __Pyx_memviewslice __pyx_v_ray_direction, __Pyx_memviewslice __pyx_v_aabb_min, __Pyx_memviewslice __pyx_v_aabb_max); /* proto */
+static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_4intersect(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_offset, __Pyx_memviewslice __pyx_v_direction, __Pyx_memviewslice __pyx_v_poly); /* proto */
 static PyObject *__pyx_tp_new_array(PyTypeObject *t, PyObject *a, PyObject *k); /*proto*/
 static PyObject *__pyx_tp_new_Enum(PyTypeObject *t, PyObject *a, PyObject *k); /*proto*/
 static PyObject *__pyx_tp_new_memoryview(PyTypeObject *t, PyObject *a, PyObject *k); /*proto*/
@@ -3484,6 +3657,10 @@ typedef struct {
   #if CYTHON_USE_MODULE_STATE
   #endif
   #if CYTHON_USE_MODULE_STATE
+  #endif
+  #if CYTHON_USE_MODULE_STATE
+  #endif
+  #if CYTHON_USE_MODULE_STATE
   PyObject *__pyx_type___pyx_array;
   PyObject *__pyx_type___pyx_MemviewEnum;
   PyObject *__pyx_type___pyx_memoryview;
@@ -3533,10 +3710,12 @@ typedef struct {
   PyObject *__pyx_kp_u__14;
   PyObject *__pyx_kp_u__2;
   PyObject *__pyx_n_s__3;
-  PyObject *__pyx_n_s__33;
+  PyObject *__pyx_n_s__35;
   PyObject *__pyx_kp_u__6;
   PyObject *__pyx_kp_u__7;
   PyObject *__pyx_kp_b__9;
+  PyObject *__pyx_n_s_aabb_max;
+  PyObject *__pyx_n_s_aabb_min;
   PyObject *__pyx_n_s_abc;
   PyObject *__pyx_n_s_all_distances;
   PyObject *__pyx_n_s_allocate_buffer;
@@ -3555,6 +3734,7 @@ typedef struct {
   PyObject *__pyx_n_s_count;
   PyObject *__pyx_n_s_d;
   PyObject *__pyx_n_s_dict;
+  PyObject *__pyx_n_s_dir_fraction;
   PyObject *__pyx_n_s_direction;
   PyObject *__pyx_kp_u_disable;
   PyObject *__pyx_n_s_dtype;
@@ -3573,9 +3753,11 @@ typedef struct {
   PyObject *__pyx_n_s_getstate;
   PyObject *__pyx_kp_u_got;
   PyObject *__pyx_kp_u_got_differing_extents_in_dimensi;
+  PyObject *__pyx_n_s_i;
   PyObject *__pyx_n_s_id;
   PyObject *__pyx_n_s_import;
   PyObject *__pyx_n_s_index;
+  PyObject *__pyx_n_s_inf;
   PyObject *__pyx_n_s_initializing;
   PyObject *__pyx_n_s_intersect;
   PyObject *__pyx_n_s_is_coroutine;
@@ -3608,6 +3790,9 @@ typedef struct {
   PyObject *__pyx_n_s_pyx_unpickle_Enum;
   PyObject *__pyx_n_s_pyx_vtable;
   PyObject *__pyx_n_s_range;
+  PyObject *__pyx_n_s_ray_direction;
+  PyObject *__pyx_n_s_ray_intersects_aabb;
+  PyObject *__pyx_n_s_ray_origin;
   PyObject *__pyx_n_s_ray_tracer_engine_intersect;
   PyObject *__pyx_kp_s_ray_tracer_engine_intersect_pyx;
   PyObject *__pyx_n_s_reduce;
@@ -3628,7 +3813,15 @@ typedef struct {
   PyObject *__pyx_kp_s_stringsource;
   PyObject *__pyx_n_s_struct;
   PyObject *__pyx_n_s_sys;
+  PyObject *__pyx_n_s_t1;
+  PyObject *__pyx_n_s_t2;
+  PyObject *__pyx_n_s_t3;
+  PyObject *__pyx_n_s_t4;
+  PyObject *__pyx_n_s_t5;
+  PyObject *__pyx_n_s_t6;
   PyObject *__pyx_n_s_test;
+  PyObject *__pyx_n_s_tmax;
+  PyObject *__pyx_n_s_tmin;
   PyObject *__pyx_kp_s_unable_to_allocate_array_data;
   PyObject *__pyx_kp_s_unable_to_allocate_shape_and_str;
   PyObject *__pyx_n_s_unpack;
@@ -3661,9 +3854,11 @@ typedef struct {
   PyObject *__pyx_tuple__27;
   PyObject *__pyx_tuple__29;
   PyObject *__pyx_tuple__31;
+  PyObject *__pyx_tuple__33;
   PyObject *__pyx_codeobj__28;
   PyObject *__pyx_codeobj__30;
   PyObject *__pyx_codeobj__32;
+  PyObject *__pyx_codeobj__34;
 } __pyx_mstate;
 
 #if CYTHON_USE_MODULE_STATE
@@ -3770,10 +3965,12 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_kp_u__14);
   Py_CLEAR(clear_module_state->__pyx_kp_u__2);
   Py_CLEAR(clear_module_state->__pyx_n_s__3);
-  Py_CLEAR(clear_module_state->__pyx_n_s__33);
+  Py_CLEAR(clear_module_state->__pyx_n_s__35);
   Py_CLEAR(clear_module_state->__pyx_kp_u__6);
   Py_CLEAR(clear_module_state->__pyx_kp_u__7);
   Py_CLEAR(clear_module_state->__pyx_kp_b__9);
+  Py_CLEAR(clear_module_state->__pyx_n_s_aabb_max);
+  Py_CLEAR(clear_module_state->__pyx_n_s_aabb_min);
   Py_CLEAR(clear_module_state->__pyx_n_s_abc);
   Py_CLEAR(clear_module_state->__pyx_n_s_all_distances);
   Py_CLEAR(clear_module_state->__pyx_n_s_allocate_buffer);
@@ -3792,6 +3989,7 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_n_s_count);
   Py_CLEAR(clear_module_state->__pyx_n_s_d);
   Py_CLEAR(clear_module_state->__pyx_n_s_dict);
+  Py_CLEAR(clear_module_state->__pyx_n_s_dir_fraction);
   Py_CLEAR(clear_module_state->__pyx_n_s_direction);
   Py_CLEAR(clear_module_state->__pyx_kp_u_disable);
   Py_CLEAR(clear_module_state->__pyx_n_s_dtype);
@@ -3810,9 +4008,11 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_n_s_getstate);
   Py_CLEAR(clear_module_state->__pyx_kp_u_got);
   Py_CLEAR(clear_module_state->__pyx_kp_u_got_differing_extents_in_dimensi);
+  Py_CLEAR(clear_module_state->__pyx_n_s_i);
   Py_CLEAR(clear_module_state->__pyx_n_s_id);
   Py_CLEAR(clear_module_state->__pyx_n_s_import);
   Py_CLEAR(clear_module_state->__pyx_n_s_index);
+  Py_CLEAR(clear_module_state->__pyx_n_s_inf);
   Py_CLEAR(clear_module_state->__pyx_n_s_initializing);
   Py_CLEAR(clear_module_state->__pyx_n_s_intersect);
   Py_CLEAR(clear_module_state->__pyx_n_s_is_coroutine);
@@ -3845,6 +4045,9 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_n_s_pyx_unpickle_Enum);
   Py_CLEAR(clear_module_state->__pyx_n_s_pyx_vtable);
   Py_CLEAR(clear_module_state->__pyx_n_s_range);
+  Py_CLEAR(clear_module_state->__pyx_n_s_ray_direction);
+  Py_CLEAR(clear_module_state->__pyx_n_s_ray_intersects_aabb);
+  Py_CLEAR(clear_module_state->__pyx_n_s_ray_origin);
   Py_CLEAR(clear_module_state->__pyx_n_s_ray_tracer_engine_intersect);
   Py_CLEAR(clear_module_state->__pyx_kp_s_ray_tracer_engine_intersect_pyx);
   Py_CLEAR(clear_module_state->__pyx_n_s_reduce);
@@ -3865,7 +4068,15 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_kp_s_stringsource);
   Py_CLEAR(clear_module_state->__pyx_n_s_struct);
   Py_CLEAR(clear_module_state->__pyx_n_s_sys);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t1);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t2);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t3);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t4);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t5);
+  Py_CLEAR(clear_module_state->__pyx_n_s_t6);
   Py_CLEAR(clear_module_state->__pyx_n_s_test);
+  Py_CLEAR(clear_module_state->__pyx_n_s_tmax);
+  Py_CLEAR(clear_module_state->__pyx_n_s_tmin);
   Py_CLEAR(clear_module_state->__pyx_kp_s_unable_to_allocate_array_data);
   Py_CLEAR(clear_module_state->__pyx_kp_s_unable_to_allocate_shape_and_str);
   Py_CLEAR(clear_module_state->__pyx_n_s_unpack);
@@ -3898,9 +4109,11 @@ static int __pyx_m_clear(PyObject *m) {
   Py_CLEAR(clear_module_state->__pyx_tuple__27);
   Py_CLEAR(clear_module_state->__pyx_tuple__29);
   Py_CLEAR(clear_module_state->__pyx_tuple__31);
+  Py_CLEAR(clear_module_state->__pyx_tuple__33);
   Py_CLEAR(clear_module_state->__pyx_codeobj__28);
   Py_CLEAR(clear_module_state->__pyx_codeobj__30);
   Py_CLEAR(clear_module_state->__pyx_codeobj__32);
+  Py_CLEAR(clear_module_state->__pyx_codeobj__34);
   return 0;
 }
 #endif
@@ -3985,10 +4198,12 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_kp_u__14);
   Py_VISIT(traverse_module_state->__pyx_kp_u__2);
   Py_VISIT(traverse_module_state->__pyx_n_s__3);
-  Py_VISIT(traverse_module_state->__pyx_n_s__33);
+  Py_VISIT(traverse_module_state->__pyx_n_s__35);
   Py_VISIT(traverse_module_state->__pyx_kp_u__6);
   Py_VISIT(traverse_module_state->__pyx_kp_u__7);
   Py_VISIT(traverse_module_state->__pyx_kp_b__9);
+  Py_VISIT(traverse_module_state->__pyx_n_s_aabb_max);
+  Py_VISIT(traverse_module_state->__pyx_n_s_aabb_min);
   Py_VISIT(traverse_module_state->__pyx_n_s_abc);
   Py_VISIT(traverse_module_state->__pyx_n_s_all_distances);
   Py_VISIT(traverse_module_state->__pyx_n_s_allocate_buffer);
@@ -4007,6 +4222,7 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_n_s_count);
   Py_VISIT(traverse_module_state->__pyx_n_s_d);
   Py_VISIT(traverse_module_state->__pyx_n_s_dict);
+  Py_VISIT(traverse_module_state->__pyx_n_s_dir_fraction);
   Py_VISIT(traverse_module_state->__pyx_n_s_direction);
   Py_VISIT(traverse_module_state->__pyx_kp_u_disable);
   Py_VISIT(traverse_module_state->__pyx_n_s_dtype);
@@ -4025,9 +4241,11 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_n_s_getstate);
   Py_VISIT(traverse_module_state->__pyx_kp_u_got);
   Py_VISIT(traverse_module_state->__pyx_kp_u_got_differing_extents_in_dimensi);
+  Py_VISIT(traverse_module_state->__pyx_n_s_i);
   Py_VISIT(traverse_module_state->__pyx_n_s_id);
   Py_VISIT(traverse_module_state->__pyx_n_s_import);
   Py_VISIT(traverse_module_state->__pyx_n_s_index);
+  Py_VISIT(traverse_module_state->__pyx_n_s_inf);
   Py_VISIT(traverse_module_state->__pyx_n_s_initializing);
   Py_VISIT(traverse_module_state->__pyx_n_s_intersect);
   Py_VISIT(traverse_module_state->__pyx_n_s_is_coroutine);
@@ -4060,6 +4278,9 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_n_s_pyx_unpickle_Enum);
   Py_VISIT(traverse_module_state->__pyx_n_s_pyx_vtable);
   Py_VISIT(traverse_module_state->__pyx_n_s_range);
+  Py_VISIT(traverse_module_state->__pyx_n_s_ray_direction);
+  Py_VISIT(traverse_module_state->__pyx_n_s_ray_intersects_aabb);
+  Py_VISIT(traverse_module_state->__pyx_n_s_ray_origin);
   Py_VISIT(traverse_module_state->__pyx_n_s_ray_tracer_engine_intersect);
   Py_VISIT(traverse_module_state->__pyx_kp_s_ray_tracer_engine_intersect_pyx);
   Py_VISIT(traverse_module_state->__pyx_n_s_reduce);
@@ -4080,7 +4301,15 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_kp_s_stringsource);
   Py_VISIT(traverse_module_state->__pyx_n_s_struct);
   Py_VISIT(traverse_module_state->__pyx_n_s_sys);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t1);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t2);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t3);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t4);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t5);
+  Py_VISIT(traverse_module_state->__pyx_n_s_t6);
   Py_VISIT(traverse_module_state->__pyx_n_s_test);
+  Py_VISIT(traverse_module_state->__pyx_n_s_tmax);
+  Py_VISIT(traverse_module_state->__pyx_n_s_tmin);
   Py_VISIT(traverse_module_state->__pyx_kp_s_unable_to_allocate_array_data);
   Py_VISIT(traverse_module_state->__pyx_kp_s_unable_to_allocate_shape_and_str);
   Py_VISIT(traverse_module_state->__pyx_n_s_unpack);
@@ -4113,9 +4342,11 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
   Py_VISIT(traverse_module_state->__pyx_tuple__27);
   Py_VISIT(traverse_module_state->__pyx_tuple__29);
   Py_VISIT(traverse_module_state->__pyx_tuple__31);
+  Py_VISIT(traverse_module_state->__pyx_tuple__33);
   Py_VISIT(traverse_module_state->__pyx_codeobj__28);
   Py_VISIT(traverse_module_state->__pyx_codeobj__30);
   Py_VISIT(traverse_module_state->__pyx_codeobj__32);
+  Py_VISIT(traverse_module_state->__pyx_codeobj__34);
   return 0;
 }
 #endif
@@ -4185,6 +4416,10 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #if CYTHON_USE_MODULE_STATE
 #endif
 #if CYTHON_USE_MODULE_STATE
+#endif
+#if CYTHON_USE_MODULE_STATE
+#endif
+#if CYTHON_USE_MODULE_STATE
 #define __pyx_type___pyx_array __pyx_mstate_global->__pyx_type___pyx_array
 #define __pyx_type___pyx_MemviewEnum __pyx_mstate_global->__pyx_type___pyx_MemviewEnum
 #define __pyx_type___pyx_memoryview __pyx_mstate_global->__pyx_type___pyx_memoryview
@@ -4234,10 +4469,12 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_kp_u__14 __pyx_mstate_global->__pyx_kp_u__14
 #define __pyx_kp_u__2 __pyx_mstate_global->__pyx_kp_u__2
 #define __pyx_n_s__3 __pyx_mstate_global->__pyx_n_s__3
-#define __pyx_n_s__33 __pyx_mstate_global->__pyx_n_s__33
+#define __pyx_n_s__35 __pyx_mstate_global->__pyx_n_s__35
 #define __pyx_kp_u__6 __pyx_mstate_global->__pyx_kp_u__6
 #define __pyx_kp_u__7 __pyx_mstate_global->__pyx_kp_u__7
 #define __pyx_kp_b__9 __pyx_mstate_global->__pyx_kp_b__9
+#define __pyx_n_s_aabb_max __pyx_mstate_global->__pyx_n_s_aabb_max
+#define __pyx_n_s_aabb_min __pyx_mstate_global->__pyx_n_s_aabb_min
 #define __pyx_n_s_abc __pyx_mstate_global->__pyx_n_s_abc
 #define __pyx_n_s_all_distances __pyx_mstate_global->__pyx_n_s_all_distances
 #define __pyx_n_s_allocate_buffer __pyx_mstate_global->__pyx_n_s_allocate_buffer
@@ -4256,6 +4493,7 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_n_s_count __pyx_mstate_global->__pyx_n_s_count
 #define __pyx_n_s_d __pyx_mstate_global->__pyx_n_s_d
 #define __pyx_n_s_dict __pyx_mstate_global->__pyx_n_s_dict
+#define __pyx_n_s_dir_fraction __pyx_mstate_global->__pyx_n_s_dir_fraction
 #define __pyx_n_s_direction __pyx_mstate_global->__pyx_n_s_direction
 #define __pyx_kp_u_disable __pyx_mstate_global->__pyx_kp_u_disable
 #define __pyx_n_s_dtype __pyx_mstate_global->__pyx_n_s_dtype
@@ -4274,9 +4512,11 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_n_s_getstate __pyx_mstate_global->__pyx_n_s_getstate
 #define __pyx_kp_u_got __pyx_mstate_global->__pyx_kp_u_got
 #define __pyx_kp_u_got_differing_extents_in_dimensi __pyx_mstate_global->__pyx_kp_u_got_differing_extents_in_dimensi
+#define __pyx_n_s_i __pyx_mstate_global->__pyx_n_s_i
 #define __pyx_n_s_id __pyx_mstate_global->__pyx_n_s_id
 #define __pyx_n_s_import __pyx_mstate_global->__pyx_n_s_import
 #define __pyx_n_s_index __pyx_mstate_global->__pyx_n_s_index
+#define __pyx_n_s_inf __pyx_mstate_global->__pyx_n_s_inf
 #define __pyx_n_s_initializing __pyx_mstate_global->__pyx_n_s_initializing
 #define __pyx_n_s_intersect __pyx_mstate_global->__pyx_n_s_intersect
 #define __pyx_n_s_is_coroutine __pyx_mstate_global->__pyx_n_s_is_coroutine
@@ -4309,6 +4549,9 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_n_s_pyx_unpickle_Enum __pyx_mstate_global->__pyx_n_s_pyx_unpickle_Enum
 #define __pyx_n_s_pyx_vtable __pyx_mstate_global->__pyx_n_s_pyx_vtable
 #define __pyx_n_s_range __pyx_mstate_global->__pyx_n_s_range
+#define __pyx_n_s_ray_direction __pyx_mstate_global->__pyx_n_s_ray_direction
+#define __pyx_n_s_ray_intersects_aabb __pyx_mstate_global->__pyx_n_s_ray_intersects_aabb
+#define __pyx_n_s_ray_origin __pyx_mstate_global->__pyx_n_s_ray_origin
 #define __pyx_n_s_ray_tracer_engine_intersect __pyx_mstate_global->__pyx_n_s_ray_tracer_engine_intersect
 #define __pyx_kp_s_ray_tracer_engine_intersect_pyx __pyx_mstate_global->__pyx_kp_s_ray_tracer_engine_intersect_pyx
 #define __pyx_n_s_reduce __pyx_mstate_global->__pyx_n_s_reduce
@@ -4329,7 +4572,15 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_kp_s_stringsource __pyx_mstate_global->__pyx_kp_s_stringsource
 #define __pyx_n_s_struct __pyx_mstate_global->__pyx_n_s_struct
 #define __pyx_n_s_sys __pyx_mstate_global->__pyx_n_s_sys
+#define __pyx_n_s_t1 __pyx_mstate_global->__pyx_n_s_t1
+#define __pyx_n_s_t2 __pyx_mstate_global->__pyx_n_s_t2
+#define __pyx_n_s_t3 __pyx_mstate_global->__pyx_n_s_t3
+#define __pyx_n_s_t4 __pyx_mstate_global->__pyx_n_s_t4
+#define __pyx_n_s_t5 __pyx_mstate_global->__pyx_n_s_t5
+#define __pyx_n_s_t6 __pyx_mstate_global->__pyx_n_s_t6
 #define __pyx_n_s_test __pyx_mstate_global->__pyx_n_s_test
+#define __pyx_n_s_tmax __pyx_mstate_global->__pyx_n_s_tmax
+#define __pyx_n_s_tmin __pyx_mstate_global->__pyx_n_s_tmin
 #define __pyx_kp_s_unable_to_allocate_array_data __pyx_mstate_global->__pyx_kp_s_unable_to_allocate_array_data
 #define __pyx_kp_s_unable_to_allocate_shape_and_str __pyx_mstate_global->__pyx_kp_s_unable_to_allocate_shape_and_str
 #define __pyx_n_s_unpack __pyx_mstate_global->__pyx_n_s_unpack
@@ -4362,9 +4613,11 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_tuple__27 __pyx_mstate_global->__pyx_tuple__27
 #define __pyx_tuple__29 __pyx_mstate_global->__pyx_tuple__29
 #define __pyx_tuple__31 __pyx_mstate_global->__pyx_tuple__31
+#define __pyx_tuple__33 __pyx_mstate_global->__pyx_tuple__33
 #define __pyx_codeobj__28 __pyx_mstate_global->__pyx_codeobj__28
 #define __pyx_codeobj__30 __pyx_mstate_global->__pyx_codeobj__30
 #define __pyx_codeobj__32 __pyx_mstate_global->__pyx_codeobj__32
+#define __pyx_codeobj__34 __pyx_mstate_global->__pyx_codeobj__34
 /* #### Code section: module_code ### */
 
 /* "View.MemoryView":131
@@ -19626,7 +19879,7 @@ static CYTHON_INLINE NPY_DATETIMEUNIT __pyx_f_5numpy_get_datetime64_unit(PyObjec
   return __pyx_r;
 }
 
-/* "ray_tracer/engine/intersect.pyx":11
+/* "ray_tracer/engine/intersect.pyx":12
  * from libc.math cimport sqrt
  * 
  * cpdef np.ndarray[np.float64_t] all_distances(np.ndarray[np.float64_t] offset, np.ndarray[np.float64_t] direction,             # <<<<<<<<<<<<<<
@@ -19696,21 +19949,21 @@ static PyArrayObject *__pyx_f_10ray_tracer_6engine_9intersect_all_distances(PyAr
   __pyx_pybuffernd_world.rcbuffer = &__pyx_pybuffer_world;
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_offset.rcbuffer->pybuffer, (PyObject*)__pyx_v_offset, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_offset.rcbuffer->pybuffer, (PyObject*)__pyx_v_offset, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_offset.diminfo[0].strides = __pyx_pybuffernd_offset.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_offset.diminfo[0].shape = __pyx_pybuffernd_offset.rcbuffer->pybuffer.shape[0];
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_direction.rcbuffer->pybuffer, (PyObject*)__pyx_v_direction, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_direction.rcbuffer->pybuffer, (PyObject*)__pyx_v_direction, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_direction.diminfo[0].strides = __pyx_pybuffernd_direction.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_direction.diminfo[0].shape = __pyx_pybuffernd_direction.rcbuffer->pybuffer.shape[0];
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_world.rcbuffer->pybuffer, (PyObject*)__pyx_v_world, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 3, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_world.rcbuffer->pybuffer, (PyObject*)__pyx_v_world, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 3, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_world.diminfo[0].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_world.diminfo[0].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[0]; __pyx_pybuffernd_world.diminfo[1].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[1]; __pyx_pybuffernd_world.diminfo[1].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[1]; __pyx_pybuffernd_world.diminfo[2].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[2]; __pyx_pybuffernd_world.diminfo[2].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[2];
 
-  /* "ray_tracer/engine/intersect.pyx":15
+  /* "ray_tracer/engine/intersect.pyx":16
  *     cdef int i
  *     cdef np.ndarray[np.float64_t] distances
  *     cdef np.npy_intp dim = 0             # <<<<<<<<<<<<<<
@@ -19719,41 +19972,41 @@ static PyArrayObject *__pyx_f_10ray_tracer_6engine_9intersect_all_distances(PyAr
  */
   __pyx_v_dim = 0;
 
-  /* "ray_tracer/engine/intersect.pyx":18
+  /* "ray_tracer/engine/intersect.pyx":19
  * 
  * 
  *     distances = npply.zeros(world.shape[0], dtype=npply.float64)             # <<<<<<<<<<<<<<
  *     for i in range(world.shape[0]):
  *         distances[i] = intersect(offset, direction, world[i])
  */
-  __Pyx_GetModuleGlobalName(__pyx_t_1, __pyx_n_s_npply); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __Pyx_GetModuleGlobalName(__pyx_t_1, __pyx_n_s_npply); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_PyObject_GetAttrStr(__pyx_t_1, __pyx_n_s_zeros); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyObject_GetAttrStr(__pyx_t_1, __pyx_n_s_zeros); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_3 = __pyx_f_5numpy_7ndarray_5shape_shape(((PyArrayObject *)__pyx_v_world)); if (unlikely(__pyx_t_3 == ((npy_intp *)NULL) && PyErr_Occurred())) __PYX_ERR(0, 18, __pyx_L1_error)
-  __pyx_t_1 = PyInt_FromSsize_t((__pyx_t_3[0])); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_3 = __pyx_f_5numpy_7ndarray_5shape_shape(((PyArrayObject *)__pyx_v_world)); if (unlikely(__pyx_t_3 == ((npy_intp *)NULL) && PyErr_Occurred())) __PYX_ERR(0, 19, __pyx_L1_error)
+  __pyx_t_1 = PyInt_FromSsize_t((__pyx_t_3[0])); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_4 = PyTuple_New(1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_4 = PyTuple_New(1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_GIVEREF(__pyx_t_1);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_4, 0, __pyx_t_1)) __PYX_ERR(0, 18, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_4, 0, __pyx_t_1)) __PYX_ERR(0, 19, __pyx_L1_error);
   __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __Pyx_GetModuleGlobalName(__pyx_t_5, __pyx_n_s_npply); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __Pyx_GetModuleGlobalName(__pyx_t_5, __pyx_n_s_npply); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
-  __pyx_t_6 = __Pyx_PyObject_GetAttrStr(__pyx_t_5, __pyx_n_s_float64); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_6 = __Pyx_PyObject_GetAttrStr(__pyx_t_5, __pyx_n_s_float64); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_6);
   __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
-  if (PyDict_SetItem(__pyx_t_1, __pyx_n_s_dtype, __pyx_t_6) < 0) __PYX_ERR(0, 18, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_1, __pyx_n_s_dtype, __pyx_t_6) < 0) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-  __pyx_t_6 = __Pyx_PyObject_Call(__pyx_t_2, __pyx_t_4, __pyx_t_1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 18, __pyx_L1_error)
+  __pyx_t_6 = __Pyx_PyObject_Call(__pyx_t_2, __pyx_t_4, __pyx_t_1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 19, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_6);
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  if (!(likely(((__pyx_t_6) == Py_None) || likely(__Pyx_TypeTest(__pyx_t_6, __pyx_ptype_5numpy_ndarray))))) __PYX_ERR(0, 18, __pyx_L1_error)
+  if (!(likely(((__pyx_t_6) == Py_None) || likely(__Pyx_TypeTest(__pyx_t_6, __pyx_ptype_5numpy_ndarray))))) __PYX_ERR(0, 19, __pyx_L1_error)
   __pyx_t_7 = ((PyArrayObject *)__pyx_t_6);
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
@@ -19770,39 +20023,39 @@ static PyArrayObject *__pyx_f_10ray_tracer_6engine_9intersect_all_distances(PyAr
       __pyx_t_9 = __pyx_t_10 = __pyx_t_11 = 0;
     }
     __pyx_pybuffernd_distances.diminfo[0].strides = __pyx_pybuffernd_distances.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_distances.diminfo[0].shape = __pyx_pybuffernd_distances.rcbuffer->pybuffer.shape[0];
-    if (unlikely((__pyx_t_8 < 0))) __PYX_ERR(0, 18, __pyx_L1_error)
+    if (unlikely((__pyx_t_8 < 0))) __PYX_ERR(0, 19, __pyx_L1_error)
   }
   __pyx_t_7 = 0;
   __pyx_v_distances = ((PyArrayObject *)__pyx_t_6);
   __pyx_t_6 = 0;
 
-  /* "ray_tracer/engine/intersect.pyx":19
+  /* "ray_tracer/engine/intersect.pyx":20
  * 
  *     distances = npply.zeros(world.shape[0], dtype=npply.float64)
  *     for i in range(world.shape[0]):             # <<<<<<<<<<<<<<
  *         distances[i] = intersect(offset, direction, world[i])
  *     return distances
  */
-  __pyx_t_3 = __pyx_f_5numpy_7ndarray_5shape_shape(((PyArrayObject *)__pyx_v_world)); if (unlikely(__pyx_t_3 == ((npy_intp *)NULL) && PyErr_Occurred())) __PYX_ERR(0, 19, __pyx_L1_error)
+  __pyx_t_3 = __pyx_f_5numpy_7ndarray_5shape_shape(((PyArrayObject *)__pyx_v_world)); if (unlikely(__pyx_t_3 == ((npy_intp *)NULL) && PyErr_Occurred())) __PYX_ERR(0, 20, __pyx_L1_error)
   __pyx_t_12 = (__pyx_t_3[0]);
   __pyx_t_13 = __pyx_t_12;
   for (__pyx_t_8 = 0; __pyx_t_8 < __pyx_t_13; __pyx_t_8+=1) {
     __pyx_v_i = __pyx_t_8;
 
-    /* "ray_tracer/engine/intersect.pyx":20
+    /* "ray_tracer/engine/intersect.pyx":21
  *     distances = npply.zeros(world.shape[0], dtype=npply.float64)
  *     for i in range(world.shape[0]):
  *         distances[i] = intersect(offset, direction, world[i])             # <<<<<<<<<<<<<<
  *     return distances
  * 
  */
-    __pyx_t_14 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_v_offset), PyBUF_WRITABLE); if (unlikely(!__pyx_t_14.memview)) __PYX_ERR(0, 20, __pyx_L1_error)
-    __pyx_t_15 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_v_direction), PyBUF_WRITABLE); if (unlikely(!__pyx_t_15.memview)) __PYX_ERR(0, 20, __pyx_L1_error)
-    __pyx_t_6 = __Pyx_GetItemInt(((PyObject *)__pyx_v_world), __pyx_v_i, int, 1, __Pyx_PyInt_From_int, 0, 1, 1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 20, __pyx_L1_error)
+    __pyx_t_14 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_v_offset), PyBUF_WRITABLE); if (unlikely(!__pyx_t_14.memview)) __PYX_ERR(0, 21, __pyx_L1_error)
+    __pyx_t_15 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_v_direction), PyBUF_WRITABLE); if (unlikely(!__pyx_t_15.memview)) __PYX_ERR(0, 21, __pyx_L1_error)
+    __pyx_t_6 = __Pyx_GetItemInt(((PyObject *)__pyx_v_world), __pyx_v_i, int, 1, __Pyx_PyInt_From_int, 0, 1, 1); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 21, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_6);
-    __pyx_t_16 = __Pyx_PyObject_to_MemoryviewSlice_dsds_double(__pyx_t_6, PyBUF_WRITABLE); if (unlikely(!__pyx_t_16.memview)) __PYX_ERR(0, 20, __pyx_L1_error)
+    __pyx_t_16 = __Pyx_PyObject_to_MemoryviewSlice_dsds_double(__pyx_t_6, PyBUF_WRITABLE); if (unlikely(!__pyx_t_16.memview)) __PYX_ERR(0, 21, __pyx_L1_error)
     __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-    __pyx_t_17 = __pyx_f_10ray_tracer_6engine_9intersect_intersect(__pyx_t_14, __pyx_t_15, __pyx_t_16, 0); if (unlikely(__pyx_t_17 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 20, __pyx_L1_error)
+    __pyx_t_17 = __pyx_f_10ray_tracer_6engine_9intersect_intersect(__pyx_t_14, __pyx_t_15, __pyx_t_16, 0); if (unlikely(__pyx_t_17 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 21, __pyx_L1_error)
     __PYX_XCLEAR_MEMVIEW(&__pyx_t_14, 1);
     __pyx_t_14.memview = NULL; __pyx_t_14.data = NULL;
     __PYX_XCLEAR_MEMVIEW(&__pyx_t_15, 1);
@@ -19817,12 +20070,12 @@ static PyArrayObject *__pyx_f_10ray_tracer_6engine_9intersect_all_distances(PyAr
     } else if (unlikely(__pyx_t_18 >= __pyx_pybuffernd_distances.diminfo[0].shape)) __pyx_t_19 = 0;
     if (unlikely(__pyx_t_19 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_19);
-      __PYX_ERR(0, 20, __pyx_L1_error)
+      __PYX_ERR(0, 21, __pyx_L1_error)
     }
     *__Pyx_BufPtrStrided1d(__pyx_t_5numpy_float64_t *, __pyx_pybuffernd_distances.rcbuffer->pybuffer.buf, __pyx_t_18, __pyx_pybuffernd_distances.diminfo[0].strides) = __pyx_t_17;
   }
 
-  /* "ray_tracer/engine/intersect.pyx":21
+  /* "ray_tracer/engine/intersect.pyx":22
  *     for i in range(world.shape[0]):
  *         distances[i] = intersect(offset, direction, world[i])
  *     return distances             # <<<<<<<<<<<<<<
@@ -19834,7 +20087,7 @@ static PyArrayObject *__pyx_f_10ray_tracer_6engine_9intersect_all_distances(PyAr
   __pyx_r = ((PyArrayObject *)__pyx_v_distances);
   goto __pyx_L0;
 
-  /* "ray_tracer/engine/intersect.pyx":11
+  /* "ray_tracer/engine/intersect.pyx":12
  * from libc.math cimport sqrt
  * 
  * cpdef np.ndarray[np.float64_t] all_distances(np.ndarray[np.float64_t] offset, np.ndarray[np.float64_t] direction,             # <<<<<<<<<<<<<<
@@ -19935,7 +20188,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 11, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 12, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
         CYTHON_FALLTHROUGH;
         case  1:
@@ -19943,9 +20196,9 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[1]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 11, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 12, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, 1); __PYX_ERR(0, 11, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, 1); __PYX_ERR(0, 12, __pyx_L3_error)
         }
         CYTHON_FALLTHROUGH;
         case  2:
@@ -19953,14 +20206,14 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[2]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 11, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 12, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, 2); __PYX_ERR(0, 11, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, 2); __PYX_ERR(0, 12, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "all_distances") < 0)) __PYX_ERR(0, 11, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "all_distances") < 0)) __PYX_ERR(0, 12, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 3)) {
       goto __pyx_L5_argtuple_error;
@@ -19975,7 +20228,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, __pyx_nargs); __PYX_ERR(0, 11, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("all_distances", 1, 3, 3, __pyx_nargs); __PYX_ERR(0, 12, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -19989,9 +20242,9 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_offset), __pyx_ptype_5numpy_ndarray, 1, "offset", 0))) __PYX_ERR(0, 11, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_direction), __pyx_ptype_5numpy_ndarray, 1, "direction", 0))) __PYX_ERR(0, 11, __pyx_L1_error)
-  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_world), __pyx_ptype_5numpy_ndarray, 1, "world", 0))) __PYX_ERR(0, 12, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_offset), __pyx_ptype_5numpy_ndarray, 1, "offset", 0))) __PYX_ERR(0, 12, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_direction), __pyx_ptype_5numpy_ndarray, 1, "direction", 0))) __PYX_ERR(0, 12, __pyx_L1_error)
+  if (unlikely(!__Pyx_ArgTypeTest(((PyObject *)__pyx_v_world), __pyx_ptype_5numpy_ndarray, 1, "world", 0))) __PYX_ERR(0, 13, __pyx_L1_error)
   __pyx_r = __pyx_pf_10ray_tracer_6engine_9intersect_all_distances(__pyx_self, __pyx_v_offset, __pyx_v_direction, __pyx_v_world);
 
   /* function exit code */
@@ -20037,21 +20290,21 @@ static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_all_distances(CYTHON_U
   __pyx_pybuffernd_world.rcbuffer = &__pyx_pybuffer_world;
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_offset.rcbuffer->pybuffer, (PyObject*)__pyx_v_offset, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_offset.rcbuffer->pybuffer, (PyObject*)__pyx_v_offset, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_offset.diminfo[0].strides = __pyx_pybuffernd_offset.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_offset.diminfo[0].shape = __pyx_pybuffernd_offset.rcbuffer->pybuffer.shape[0];
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_direction.rcbuffer->pybuffer, (PyObject*)__pyx_v_direction, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_direction.rcbuffer->pybuffer, (PyObject*)__pyx_v_direction, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 1, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_direction.diminfo[0].strides = __pyx_pybuffernd_direction.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_direction.diminfo[0].shape = __pyx_pybuffernd_direction.rcbuffer->pybuffer.shape[0];
   {
     __Pyx_BufFmt_StackElem __pyx_stack[1];
-    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_world.rcbuffer->pybuffer, (PyObject*)__pyx_v_world, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 3, 0, __pyx_stack) == -1)) __PYX_ERR(0, 11, __pyx_L1_error)
+    if (unlikely(__Pyx_GetBufferAndValidate(&__pyx_pybuffernd_world.rcbuffer->pybuffer, (PyObject*)__pyx_v_world, &__Pyx_TypeInfo_nn___pyx_t_5numpy_float64_t, PyBUF_FORMAT| PyBUF_STRIDES, 3, 0, __pyx_stack) == -1)) __PYX_ERR(0, 12, __pyx_L1_error)
   }
   __pyx_pybuffernd_world.diminfo[0].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[0]; __pyx_pybuffernd_world.diminfo[0].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[0]; __pyx_pybuffernd_world.diminfo[1].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[1]; __pyx_pybuffernd_world.diminfo[1].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[1]; __pyx_pybuffernd_world.diminfo[2].strides = __pyx_pybuffernd_world.rcbuffer->pybuffer.strides[2]; __pyx_pybuffernd_world.diminfo[2].shape = __pyx_pybuffernd_world.rcbuffer->pybuffer.shape[2];
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = ((PyObject *)__pyx_f_10ray_tracer_6engine_9intersect_all_distances(__pyx_v_offset, __pyx_v_direction, __pyx_v_world, 0)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 11, __pyx_L1_error)
+  __pyx_t_1 = ((PyObject *)__pyx_f_10ray_tracer_6engine_9intersect_all_distances(__pyx_v_offset, __pyx_v_direction, __pyx_v_world, 0)); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 12, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
@@ -20081,7 +20334,7 @@ static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_all_distances(CYTHON_U
   return __pyx_r;
 }
 
-/* "ray_tracer/engine/intersect.pyx":25
+/* "ray_tracer/engine/intersect.pyx":26
  * 
  * # Use this cdef for functions you don't want to expose to Python
  * cdef double dot(double[:] vec1, double[:] vec2):             # <<<<<<<<<<<<<<
@@ -20103,7 +20356,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
 
-  /* "ray_tracer/engine/intersect.pyx":27
+  /* "ray_tracer/engine/intersect.pyx":28
  * cdef double dot(double[:] vec1, double[:] vec2):
  *     cdef int i
  *     cdef double result = 0.0             # <<<<<<<<<<<<<<
@@ -20112,7 +20365,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
  */
   __pyx_v_result = 0.0;
 
-  /* "ray_tracer/engine/intersect.pyx":28
+  /* "ray_tracer/engine/intersect.pyx":29
  *     cdef int i
  *     cdef double result = 0.0
  *     for i in range(vec1.shape[0]):             # <<<<<<<<<<<<<<
@@ -20124,7 +20377,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
   for (__pyx_t_3 = 0; __pyx_t_3 < __pyx_t_2; __pyx_t_3+=1) {
     __pyx_v_i = __pyx_t_3;
 
-    /* "ray_tracer/engine/intersect.pyx":29
+    /* "ray_tracer/engine/intersect.pyx":30
  *     cdef double result = 0.0
  *     for i in range(vec1.shape[0]):
  *         result += vec1[i] * vec2[i]             # <<<<<<<<<<<<<<
@@ -20139,7 +20392,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
     } else if (unlikely(__pyx_t_4 >= __pyx_v_vec1.shape[0])) __pyx_t_5 = 0;
     if (unlikely(__pyx_t_5 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_5);
-      __PYX_ERR(0, 29, __pyx_L1_error)
+      __PYX_ERR(0, 30, __pyx_L1_error)
     }
     __pyx_t_6 = __pyx_v_i;
     __pyx_t_5 = -1;
@@ -20149,12 +20402,12 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
     } else if (unlikely(__pyx_t_6 >= __pyx_v_vec2.shape[0])) __pyx_t_5 = 0;
     if (unlikely(__pyx_t_5 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_5);
-      __PYX_ERR(0, 29, __pyx_L1_error)
+      __PYX_ERR(0, 30, __pyx_L1_error)
     }
     __pyx_v_result = (__pyx_v_result + ((*((double *) ( /* dim=0 */ (__pyx_v_vec1.data + __pyx_t_4 * __pyx_v_vec1.strides[0]) ))) * (*((double *) ( /* dim=0 */ (__pyx_v_vec2.data + __pyx_t_6 * __pyx_v_vec2.strides[0]) )))));
   }
 
-  /* "ray_tracer/engine/intersect.pyx":30
+  /* "ray_tracer/engine/intersect.pyx":31
  *     for i in range(vec1.shape[0]):
  *         result += vec1[i] * vec2[i]
  *     return result             # <<<<<<<<<<<<<<
@@ -20164,7 +20417,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
   __pyx_r = __pyx_v_result;
   goto __pyx_L0;
 
-  /* "ray_tracer/engine/intersect.pyx":25
+  /* "ray_tracer/engine/intersect.pyx":26
  * 
  * # Use this cdef for functions you don't want to expose to Python
  * cdef double dot(double[:] vec1, double[:] vec2):             # <<<<<<<<<<<<<<
@@ -20180,7 +20433,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_dot(__Pyx_memviewslice __p
   return __pyx_r;
 }
 
-/* "ray_tracer/engine/intersect.pyx":32
+/* "ray_tracer/engine/intersect.pyx":33
  *     return result
  * 
  * cdef double[:] point_on_line(double[:] point, double[:] direction, double distance):             # <<<<<<<<<<<<<<
@@ -20206,7 +20459,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("point_on_line", 1);
 
-  /* "ray_tracer/engine/intersect.pyx":36
+  /* "ray_tracer/engine/intersect.pyx":37
  *     cdef double[3] result_arr  # declare a static array instead
  *     cdef int i
  *     for i in range(3):  # Assuming 3D vectors             # <<<<<<<<<<<<<<
@@ -20216,7 +20469,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
   for (__pyx_t_1 = 0; __pyx_t_1 < 3; __pyx_t_1+=1) {
     __pyx_v_i = __pyx_t_1;
 
-    /* "ray_tracer/engine/intersect.pyx":37
+    /* "ray_tracer/engine/intersect.pyx":38
  *     cdef int i
  *     for i in range(3):  # Assuming 3D vectors
  *         result_arr[i] = point[i] + distance * direction[i]             # <<<<<<<<<<<<<<
@@ -20231,7 +20484,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
     } else if (unlikely(__pyx_t_2 >= __pyx_v_point.shape[0])) __pyx_t_3 = 0;
     if (unlikely(__pyx_t_3 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_3);
-      __PYX_ERR(0, 37, __pyx_L1_error)
+      __PYX_ERR(0, 38, __pyx_L1_error)
     }
     __pyx_t_4 = __pyx_v_i;
     __pyx_t_3 = -1;
@@ -20241,36 +20494,36 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
     } else if (unlikely(__pyx_t_4 >= __pyx_v_direction.shape[0])) __pyx_t_3 = 0;
     if (unlikely(__pyx_t_3 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_3);
-      __PYX_ERR(0, 37, __pyx_L1_error)
+      __PYX_ERR(0, 38, __pyx_L1_error)
     }
     (__pyx_v_result_arr[__pyx_v_i]) = ((*((double *) ( /* dim=0 */ (__pyx_v_point.data + __pyx_t_2 * __pyx_v_point.strides[0]) ))) + (__pyx_v_distance * (*((double *) ( /* dim=0 */ (__pyx_v_direction.data + __pyx_t_4 * __pyx_v_direction.strides[0]) )))));
   }
 
-  /* "ray_tracer/engine/intersect.pyx":40
+  /* "ray_tracer/engine/intersect.pyx":41
  * 
  *     # Create a Cython array from the C array. This array is heap-allocated and can be returned safely.
  *     cdef double[:] result_view = cvarray(shape=(3,), itemsize=sizeof(double), format="d")             # <<<<<<<<<<<<<<
  *     for i in range(3):
  *         result_view[i] = result_arr[i]
  */
-  __pyx_t_5 = __Pyx_PyDict_NewPresized(3); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 40, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_PyDict_NewPresized(3); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_5);
-  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_shape, __pyx_tuple__17) < 0) __PYX_ERR(0, 40, __pyx_L1_error)
-  __pyx_t_6 = __Pyx_PyInt_FromSize_t((sizeof(double))); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 40, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_shape, __pyx_tuple__17) < 0) __PYX_ERR(0, 41, __pyx_L1_error)
+  __pyx_t_6 = __Pyx_PyInt_FromSize_t((sizeof(double))); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_6);
-  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_itemsize, __pyx_t_6) < 0) __PYX_ERR(0, 40, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_itemsize, __pyx_t_6) < 0) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
-  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_format, __pyx_n_s_d) < 0) __PYX_ERR(0, 40, __pyx_L1_error)
-  __pyx_t_6 = __Pyx_PyObject_Call(((PyObject *)__pyx_array_type), __pyx_empty_tuple, __pyx_t_5); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 40, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_5, __pyx_n_s_format, __pyx_n_s_d) < 0) __PYX_ERR(0, 41, __pyx_L1_error)
+  __pyx_t_6 = __Pyx_PyObject_Call(((PyObject *)__pyx_array_type), __pyx_empty_tuple, __pyx_t_5); if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_6);
   __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
-  __pyx_t_7 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(__pyx_t_6, PyBUF_WRITABLE); if (unlikely(!__pyx_t_7.memview)) __PYX_ERR(0, 40, __pyx_L1_error)
+  __pyx_t_7 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(__pyx_t_6, PyBUF_WRITABLE); if (unlikely(!__pyx_t_7.memview)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
   __pyx_v_result_view = __pyx_t_7;
   __pyx_t_7.memview = NULL;
   __pyx_t_7.data = NULL;
 
-  /* "ray_tracer/engine/intersect.pyx":41
+  /* "ray_tracer/engine/intersect.pyx":42
  *     # Create a Cython array from the C array. This array is heap-allocated and can be returned safely.
  *     cdef double[:] result_view = cvarray(shape=(3,), itemsize=sizeof(double), format="d")
  *     for i in range(3):             # <<<<<<<<<<<<<<
@@ -20280,7 +20533,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
   for (__pyx_t_1 = 0; __pyx_t_1 < 3; __pyx_t_1+=1) {
     __pyx_v_i = __pyx_t_1;
 
-    /* "ray_tracer/engine/intersect.pyx":42
+    /* "ray_tracer/engine/intersect.pyx":43
  *     cdef double[:] result_view = cvarray(shape=(3,), itemsize=sizeof(double), format="d")
  *     for i in range(3):
  *         result_view[i] = result_arr[i]             # <<<<<<<<<<<<<<
@@ -20295,12 +20548,12 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
     } else if (unlikely(__pyx_t_4 >= __pyx_v_result_view.shape[0])) __pyx_t_3 = 0;
     if (unlikely(__pyx_t_3 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_3);
-      __PYX_ERR(0, 42, __pyx_L1_error)
+      __PYX_ERR(0, 43, __pyx_L1_error)
     }
     *((double *) ( /* dim=0 */ (__pyx_v_result_view.data + __pyx_t_4 * __pyx_v_result_view.strides[0]) )) = (__pyx_v_result_arr[__pyx_v_i]);
   }
 
-  /* "ray_tracer/engine/intersect.pyx":44
+  /* "ray_tracer/engine/intersect.pyx":45
  *         result_view[i] = result_arr[i]
  * 
  *     return result_view             # <<<<<<<<<<<<<<
@@ -20311,7 +20564,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
   __pyx_r = __pyx_v_result_view;
   goto __pyx_L0;
 
-  /* "ray_tracer/engine/intersect.pyx":32
+  /* "ray_tracer/engine/intersect.pyx":33
  *     return result
  * 
  * cdef double[:] point_on_line(double[:] point, double[:] direction, double distance):             # <<<<<<<<<<<<<<
@@ -20338,7 +20591,7 @@ static __Pyx_memviewslice __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(
   return __pyx_r;
 }
 
-/* "ray_tracer/engine/intersect.pyx":46
+/* "ray_tracer/engine/intersect.pyx":47
  *     return result_view
  * 
  * cdef void subtract_vectors(double[:] vec1, double[:] vec2, double[:] result) nogil:             # <<<<<<<<<<<<<<
@@ -20362,7 +20615,7 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
   PyGILState_STATE __pyx_gilstate_save;
   #endif
 
-  /* "ray_tracer/engine/intersect.pyx":48
+  /* "ray_tracer/engine/intersect.pyx":49
  * cdef void subtract_vectors(double[:] vec1, double[:] vec2, double[:] result) nogil:
  *     cdef int i
  *     for i in range(vec1.shape[0]):             # <<<<<<<<<<<<<<
@@ -20374,12 +20627,12 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
   for (__pyx_t_3 = 0; __pyx_t_3 < __pyx_t_2; __pyx_t_3+=1) {
     __pyx_v_i = __pyx_t_3;
 
-    /* "ray_tracer/engine/intersect.pyx":49
+    /* "ray_tracer/engine/intersect.pyx":50
  *     cdef int i
  *     for i in range(vec1.shape[0]):
  *         result[i] = vec1[i] - vec2[i]             # <<<<<<<<<<<<<<
  * 
- * cpdef double intersect(double[:] offset, double[:] direction, double[:, :] poly):
+ * @cython.boundscheck(False)  # Deactivate bounds checking
  */
     __pyx_t_4 = __pyx_v_i;
     __pyx_t_5 = -1;
@@ -20389,7 +20642,7 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
     } else if (unlikely(__pyx_t_4 >= __pyx_v_vec1.shape[0])) __pyx_t_5 = 0;
     if (unlikely(__pyx_t_5 != -1)) {
       __Pyx_RaiseBufferIndexErrorNogil(__pyx_t_5);
-      __PYX_ERR(0, 49, __pyx_L1_error)
+      __PYX_ERR(0, 50, __pyx_L1_error)
     }
     __pyx_t_6 = __pyx_v_i;
     __pyx_t_5 = -1;
@@ -20399,7 +20652,7 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
     } else if (unlikely(__pyx_t_6 >= __pyx_v_vec2.shape[0])) __pyx_t_5 = 0;
     if (unlikely(__pyx_t_5 != -1)) {
       __Pyx_RaiseBufferIndexErrorNogil(__pyx_t_5);
-      __PYX_ERR(0, 49, __pyx_L1_error)
+      __PYX_ERR(0, 50, __pyx_L1_error)
     }
     __pyx_t_7 = __pyx_v_i;
     __pyx_t_5 = -1;
@@ -20409,12 +20662,12 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
     } else if (unlikely(__pyx_t_7 >= __pyx_v_result.shape[0])) __pyx_t_5 = 0;
     if (unlikely(__pyx_t_5 != -1)) {
       __Pyx_RaiseBufferIndexErrorNogil(__pyx_t_5);
-      __PYX_ERR(0, 49, __pyx_L1_error)
+      __PYX_ERR(0, 50, __pyx_L1_error)
     }
     *((double *) ( /* dim=0 */ (__pyx_v_result.data + __pyx_t_7 * __pyx_v_result.strides[0]) )) = ((*((double *) ( /* dim=0 */ (__pyx_v_vec1.data + __pyx_t_4 * __pyx_v_vec1.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_vec2.data + __pyx_t_6 * __pyx_v_vec2.strides[0]) ))));
   }
 
-  /* "ray_tracer/engine/intersect.pyx":46
+  /* "ray_tracer/engine/intersect.pyx":47
  *     return result_view
  * 
  * cdef void subtract_vectors(double[:] vec1, double[:] vec2, double[:] result) nogil:             # <<<<<<<<<<<<<<
@@ -20435,15 +20688,462 @@ static void __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__Pyx_memvi
   __pyx_L0:;
 }
 
-/* "ray_tracer/engine/intersect.pyx":51
+/* "ray_tracer/engine/intersect.pyx":52
  *         result[i] = vec1[i] - vec2[i]
  * 
+ * @cython.boundscheck(False)  # Deactivate bounds checking             # <<<<<<<<<<<<<<
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
+ */
+
+/* Python wrapper */
+static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_3ray_intersects_aabb(PyObject *__pyx_self, 
+#if CYTHON_METH_FASTCALL
+PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
+#else
+PyObject *__pyx_args, PyObject *__pyx_kwds
+#endif
+); /*proto*/
+static PyMethodDef __pyx_mdef_10ray_tracer_6engine_9intersect_3ray_intersects_aabb = {"ray_intersects_aabb", (PyCFunction)(void*)(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_10ray_tracer_6engine_9intersect_3ray_intersects_aabb, __Pyx_METH_FASTCALL|METH_KEYWORDS, 0};
+static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_3ray_intersects_aabb(PyObject *__pyx_self, 
+#if CYTHON_METH_FASTCALL
+PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
+#else
+PyObject *__pyx_args, PyObject *__pyx_kwds
+#endif
+) {
+  __Pyx_memviewslice __pyx_v_ray_origin = { 0, 0, { 0 }, { 0 }, { 0 } };
+  __Pyx_memviewslice __pyx_v_ray_direction = { 0, 0, { 0 }, { 0 }, { 0 } };
+  __Pyx_memviewslice __pyx_v_aabb_min = { 0, 0, { 0 }, { 0 }, { 0 } };
+  __Pyx_memviewslice __pyx_v_aabb_max = { 0, 0, { 0 }, { 0 }, { 0 } };
+  #if !CYTHON_METH_FASTCALL
+  CYTHON_UNUSED Py_ssize_t __pyx_nargs;
+  #endif
+  CYTHON_UNUSED PyObject *const *__pyx_kwvalues;
+  PyObject* values[4] = {0,0,0,0};
+  int __pyx_lineno = 0;
+  const char *__pyx_filename = NULL;
+  int __pyx_clineno = 0;
+  PyObject *__pyx_r = 0;
+  __Pyx_RefNannyDeclarations
+  __Pyx_RefNannySetupContext("ray_intersects_aabb (wrapper)", 0);
+  #if !CYTHON_METH_FASTCALL
+  #if CYTHON_ASSUME_SAFE_MACROS
+  __pyx_nargs = PyTuple_GET_SIZE(__pyx_args);
+  #else
+  __pyx_nargs = PyTuple_Size(__pyx_args); if (unlikely(__pyx_nargs < 0)) return NULL;
+  #endif
+  #endif
+  __pyx_kwvalues = __Pyx_KwValues_FASTCALL(__pyx_args, __pyx_nargs);
+  {
+    PyObject **__pyx_pyargnames[] = {&__pyx_n_s_ray_origin,&__pyx_n_s_ray_direction,&__pyx_n_s_aabb_min,&__pyx_n_s_aabb_max,0};
+    if (__pyx_kwds) {
+      Py_ssize_t kw_args;
+      switch (__pyx_nargs) {
+        case  4: values[3] = __Pyx_Arg_FASTCALL(__pyx_args, 3);
+        CYTHON_FALLTHROUGH;
+        case  3: values[2] = __Pyx_Arg_FASTCALL(__pyx_args, 2);
+        CYTHON_FALLTHROUGH;
+        case  2: values[1] = __Pyx_Arg_FASTCALL(__pyx_args, 1);
+        CYTHON_FALLTHROUGH;
+        case  1: values[0] = __Pyx_Arg_FASTCALL(__pyx_args, 0);
+        CYTHON_FALLTHROUGH;
+        case  0: break;
+        default: goto __pyx_L5_argtuple_error;
+      }
+      kw_args = __Pyx_NumKwargs_FASTCALL(__pyx_kwds);
+      switch (__pyx_nargs) {
+        case  0:
+        if (likely((values[0] = __Pyx_GetKwValue_FASTCALL(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_ray_origin)) != 0)) {
+          (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
+          kw_args--;
+        }
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 52, __pyx_L3_error)
+        else goto __pyx_L5_argtuple_error;
+        CYTHON_FALLTHROUGH;
+        case  1:
+        if (likely((values[1] = __Pyx_GetKwValue_FASTCALL(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_ray_direction)) != 0)) {
+          (void)__Pyx_Arg_NewRef_FASTCALL(values[1]);
+          kw_args--;
+        }
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 52, __pyx_L3_error)
+        else {
+          __Pyx_RaiseArgtupleInvalid("ray_intersects_aabb", 1, 4, 4, 1); __PYX_ERR(0, 52, __pyx_L3_error)
+        }
+        CYTHON_FALLTHROUGH;
+        case  2:
+        if (likely((values[2] = __Pyx_GetKwValue_FASTCALL(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_aabb_min)) != 0)) {
+          (void)__Pyx_Arg_NewRef_FASTCALL(values[2]);
+          kw_args--;
+        }
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 52, __pyx_L3_error)
+        else {
+          __Pyx_RaiseArgtupleInvalid("ray_intersects_aabb", 1, 4, 4, 2); __PYX_ERR(0, 52, __pyx_L3_error)
+        }
+        CYTHON_FALLTHROUGH;
+        case  3:
+        if (likely((values[3] = __Pyx_GetKwValue_FASTCALL(__pyx_kwds, __pyx_kwvalues, __pyx_n_s_aabb_max)) != 0)) {
+          (void)__Pyx_Arg_NewRef_FASTCALL(values[3]);
+          kw_args--;
+        }
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 52, __pyx_L3_error)
+        else {
+          __Pyx_RaiseArgtupleInvalid("ray_intersects_aabb", 1, 4, 4, 3); __PYX_ERR(0, 52, __pyx_L3_error)
+        }
+      }
+      if (unlikely(kw_args > 0)) {
+        const Py_ssize_t kwd_pos_args = __pyx_nargs;
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "ray_intersects_aabb") < 0)) __PYX_ERR(0, 52, __pyx_L3_error)
+      }
+    } else if (unlikely(__pyx_nargs != 4)) {
+      goto __pyx_L5_argtuple_error;
+    } else {
+      values[0] = __Pyx_Arg_FASTCALL(__pyx_args, 0);
+      values[1] = __Pyx_Arg_FASTCALL(__pyx_args, 1);
+      values[2] = __Pyx_Arg_FASTCALL(__pyx_args, 2);
+      values[3] = __Pyx_Arg_FASTCALL(__pyx_args, 3);
+    }
+    __pyx_v_ray_origin = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[0], PyBUF_WRITABLE); if (unlikely(!__pyx_v_ray_origin.memview)) __PYX_ERR(0, 55, __pyx_L3_error)
+    __pyx_v_ray_direction = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[1], PyBUF_WRITABLE); if (unlikely(!__pyx_v_ray_direction.memview)) __PYX_ERR(0, 55, __pyx_L3_error)
+    __pyx_v_aabb_min = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[2], PyBUF_WRITABLE); if (unlikely(!__pyx_v_aabb_min.memview)) __PYX_ERR(0, 55, __pyx_L3_error)
+    __pyx_v_aabb_max = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[3], PyBUF_WRITABLE); if (unlikely(!__pyx_v_aabb_max.memview)) __PYX_ERR(0, 55, __pyx_L3_error)
+  }
+  goto __pyx_L6_skip;
+  __pyx_L5_argtuple_error:;
+  __Pyx_RaiseArgtupleInvalid("ray_intersects_aabb", 1, 4, 4, __pyx_nargs); __PYX_ERR(0, 52, __pyx_L3_error)
+  __pyx_L6_skip:;
+  goto __pyx_L4_argument_unpacking_done;
+  __pyx_L3_error:;
+  {
+    Py_ssize_t __pyx_temp;
+    for (__pyx_temp=0; __pyx_temp < (Py_ssize_t)(sizeof(values)/sizeof(values[0])); ++__pyx_temp) {
+      __Pyx_Arg_XDECREF_FASTCALL(values[__pyx_temp]);
+    }
+  }
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_ray_origin, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_ray_direction, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_aabb_min, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_aabb_max, 1);
+  __Pyx_AddTraceback("ray_tracer.engine.intersect.ray_intersects_aabb", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __Pyx_RefNannyFinishContext();
+  return NULL;
+  __pyx_L4_argument_unpacking_done:;
+  __pyx_r = __pyx_pf_10ray_tracer_6engine_9intersect_2ray_intersects_aabb(__pyx_self, __pyx_v_ray_origin, __pyx_v_ray_direction, __pyx_v_aabb_min, __pyx_v_aabb_max);
+
+  /* function exit code */
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_ray_origin, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_ray_direction, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_aabb_min, 1);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_v_aabb_max, 1);
+  {
+    Py_ssize_t __pyx_temp;
+    for (__pyx_temp=0; __pyx_temp < (Py_ssize_t)(sizeof(values)/sizeof(values[0])); ++__pyx_temp) {
+      __Pyx_Arg_XDECREF_FASTCALL(values[__pyx_temp]);
+    }
+  }
+  __Pyx_RefNannyFinishContext();
+  return __pyx_r;
+}
+
+static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2ray_intersects_aabb(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_ray_origin, __Pyx_memviewslice __pyx_v_ray_direction, __Pyx_memviewslice __pyx_v_aabb_min, __Pyx_memviewslice __pyx_v_aabb_max) {
+  double __pyx_v_t1;
+  double __pyx_v_t2;
+  double __pyx_v_t3;
+  double __pyx_v_t4;
+  double __pyx_v_t5;
+  double __pyx_v_t6;
+  double __pyx_v_tmin;
+  double __pyx_v_tmax;
+  double __pyx_v_dir_fraction[3];
+  long __pyx_v_i;
+  PyObject *__pyx_r = NULL;
+  __Pyx_RefNannyDeclarations
+  long __pyx_t_1;
+  double __pyx_t_2;
+  Py_ssize_t __pyx_t_3;
+  int __pyx_t_4;
+  double __pyx_t_5;
+  Py_ssize_t __pyx_t_6;
+  double __pyx_t_7;
+  double __pyx_t_8;
+  double __pyx_t_9;
+  int __pyx_t_10;
+  int __pyx_lineno = 0;
+  const char *__pyx_filename = NULL;
+  int __pyx_clineno = 0;
+  __Pyx_RefNannySetupContext("ray_intersects_aabb", 1);
+
+  /* "ray_tracer/engine/intersect.pyx":60
+ * 
+ *     # Preventing division by zero and costly operations by calculating inverses once
+ *     for i in range(3):             # <<<<<<<<<<<<<<
+ *         dir_fraction[i] = 1.0 / ray_direction[i] if ray_direction[i] != 0 else float('inf')
+ * 
+ */
+  for (__pyx_t_1 = 0; __pyx_t_1 < 3; __pyx_t_1+=1) {
+    __pyx_v_i = __pyx_t_1;
+
+    /* "ray_tracer/engine/intersect.pyx":61
+ *     # Preventing division by zero and costly operations by calculating inverses once
+ *     for i in range(3):
+ *         dir_fraction[i] = 1.0 / ray_direction[i] if ray_direction[i] != 0 else float('inf')             # <<<<<<<<<<<<<<
+ * 
+ *     t1 = (aabb_min[0] - ray_origin[0]) * dir_fraction[0]
+ */
+    __pyx_t_3 = __pyx_v_i;
+    __pyx_t_4 = ((*((double *) ( /* dim=0 */ (__pyx_v_ray_direction.data + __pyx_t_3 * __pyx_v_ray_direction.strides[0]) ))) != 0.0);
+    if (__pyx_t_4) {
+      __pyx_t_3 = __pyx_v_i;
+      __pyx_t_2 = (1.0 / (*((double *) ( /* dim=0 */ (__pyx_v_ray_direction.data + __pyx_t_3 * __pyx_v_ray_direction.strides[0]) ))));
+    } else {
+      __pyx_t_5 = __Pyx_PyString_AsDouble(__pyx_n_s_inf); if (unlikely(__pyx_t_5 == ((double)((double)-1)) && PyErr_Occurred())) __PYX_ERR(0, 61, __pyx_L1_error)
+      __pyx_t_2 = __pyx_t_5;
+    }
+    (__pyx_v_dir_fraction[__pyx_v_i]) = __pyx_t_2;
+  }
+
+  /* "ray_tracer/engine/intersect.pyx":63
+ *         dir_fraction[i] = 1.0 / ray_direction[i] if ray_direction[i] != 0 else float('inf')
+ * 
+ *     t1 = (aabb_min[0] - ray_origin[0]) * dir_fraction[0]             # <<<<<<<<<<<<<<
+ *     t2 = (aabb_max[0] - ray_origin[0]) * dir_fraction[0]
+ *     t3 = (aabb_min[1] - ray_origin[1]) * dir_fraction[1]
+ */
+  __pyx_t_3 = 0;
+  __pyx_t_6 = 0;
+  __pyx_v_t1 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_min.data + __pyx_t_3 * __pyx_v_aabb_min.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_6 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[0]));
+
+  /* "ray_tracer/engine/intersect.pyx":64
+ * 
+ *     t1 = (aabb_min[0] - ray_origin[0]) * dir_fraction[0]
+ *     t2 = (aabb_max[0] - ray_origin[0]) * dir_fraction[0]             # <<<<<<<<<<<<<<
+ *     t3 = (aabb_min[1] - ray_origin[1]) * dir_fraction[1]
+ *     t4 = (aabb_max[1] - ray_origin[1]) * dir_fraction[1]
+ */
+  __pyx_t_6 = 0;
+  __pyx_t_3 = 0;
+  __pyx_v_t2 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_max.data + __pyx_t_6 * __pyx_v_aabb_max.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_3 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[0]));
+
+  /* "ray_tracer/engine/intersect.pyx":65
+ *     t1 = (aabb_min[0] - ray_origin[0]) * dir_fraction[0]
+ *     t2 = (aabb_max[0] - ray_origin[0]) * dir_fraction[0]
+ *     t3 = (aabb_min[1] - ray_origin[1]) * dir_fraction[1]             # <<<<<<<<<<<<<<
+ *     t4 = (aabb_max[1] - ray_origin[1]) * dir_fraction[1]
+ *     t5 = (aabb_min[2] - ray_origin[2]) * dir_fraction[2]
+ */
+  __pyx_t_3 = 1;
+  __pyx_t_6 = 1;
+  __pyx_v_t3 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_min.data + __pyx_t_3 * __pyx_v_aabb_min.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_6 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[1]));
+
+  /* "ray_tracer/engine/intersect.pyx":66
+ *     t2 = (aabb_max[0] - ray_origin[0]) * dir_fraction[0]
+ *     t3 = (aabb_min[1] - ray_origin[1]) * dir_fraction[1]
+ *     t4 = (aabb_max[1] - ray_origin[1]) * dir_fraction[1]             # <<<<<<<<<<<<<<
+ *     t5 = (aabb_min[2] - ray_origin[2]) * dir_fraction[2]
+ *     t6 = (aabb_max[2] - ray_origin[2]) * dir_fraction[2]
+ */
+  __pyx_t_6 = 1;
+  __pyx_t_3 = 1;
+  __pyx_v_t4 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_max.data + __pyx_t_6 * __pyx_v_aabb_max.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_3 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[1]));
+
+  /* "ray_tracer/engine/intersect.pyx":67
+ *     t3 = (aabb_min[1] - ray_origin[1]) * dir_fraction[1]
+ *     t4 = (aabb_max[1] - ray_origin[1]) * dir_fraction[1]
+ *     t5 = (aabb_min[2] - ray_origin[2]) * dir_fraction[2]             # <<<<<<<<<<<<<<
+ *     t6 = (aabb_max[2] - ray_origin[2]) * dir_fraction[2]
+ * 
+ */
+  __pyx_t_3 = 2;
+  __pyx_t_6 = 2;
+  __pyx_v_t5 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_min.data + __pyx_t_3 * __pyx_v_aabb_min.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_6 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[2]));
+
+  /* "ray_tracer/engine/intersect.pyx":68
+ *     t4 = (aabb_max[1] - ray_origin[1]) * dir_fraction[1]
+ *     t5 = (aabb_min[2] - ray_origin[2]) * dir_fraction[2]
+ *     t6 = (aabb_max[2] - ray_origin[2]) * dir_fraction[2]             # <<<<<<<<<<<<<<
+ * 
+ *     tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))
+ */
+  __pyx_t_6 = 2;
+  __pyx_t_3 = 2;
+  __pyx_v_t6 = (((*((double *) ( /* dim=0 */ (__pyx_v_aabb_max.data + __pyx_t_6 * __pyx_v_aabb_max.strides[0]) ))) - (*((double *) ( /* dim=0 */ (__pyx_v_ray_origin.data + __pyx_t_3 * __pyx_v_ray_origin.strides[0]) )))) * (__pyx_v_dir_fraction[2]));
+
+  /* "ray_tracer/engine/intersect.pyx":70
+ *     t6 = (aabb_max[2] - ray_origin[2]) * dir_fraction[2]
+ * 
+ *     tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))             # <<<<<<<<<<<<<<
+ *     tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6))
+ * 
+ */
+  __pyx_t_2 = __pyx_v_t6;
+  __pyx_t_5 = __pyx_v_t5;
+  __pyx_t_4 = (__pyx_t_2 < __pyx_t_5);
+  if (__pyx_t_4) {
+    __pyx_t_7 = __pyx_t_2;
+  } else {
+    __pyx_t_7 = __pyx_t_5;
+  }
+  __pyx_t_2 = __pyx_t_7;
+  __pyx_t_7 = __pyx_v_t4;
+  __pyx_t_5 = __pyx_v_t3;
+  __pyx_t_4 = (__pyx_t_7 < __pyx_t_5);
+  if (__pyx_t_4) {
+    __pyx_t_8 = __pyx_t_7;
+  } else {
+    __pyx_t_8 = __pyx_t_5;
+  }
+  __pyx_t_7 = __pyx_t_8;
+  __pyx_t_8 = __pyx_v_t2;
+  __pyx_t_5 = __pyx_v_t1;
+  __pyx_t_4 = (__pyx_t_8 < __pyx_t_5);
+  if (__pyx_t_4) {
+    __pyx_t_9 = __pyx_t_8;
+  } else {
+    __pyx_t_9 = __pyx_t_5;
+  }
+  __pyx_t_8 = __pyx_t_9;
+  __pyx_t_4 = (__pyx_t_7 > __pyx_t_8);
+  if (__pyx_t_4) {
+    __pyx_t_9 = __pyx_t_7;
+  } else {
+    __pyx_t_9 = __pyx_t_8;
+  }
+  __pyx_t_7 = __pyx_t_9;
+  __pyx_t_4 = (__pyx_t_2 > __pyx_t_7);
+  if (__pyx_t_4) {
+    __pyx_t_9 = __pyx_t_2;
+  } else {
+    __pyx_t_9 = __pyx_t_7;
+  }
+  __pyx_v_tmin = __pyx_t_9;
+
+  /* "ray_tracer/engine/intersect.pyx":71
+ * 
+ *     tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))
+ *     tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6))             # <<<<<<<<<<<<<<
+ * 
+ *     # Conditions for a valid intersection
+ */
+  __pyx_t_9 = __pyx_v_t6;
+  __pyx_t_2 = __pyx_v_t5;
+  __pyx_t_4 = (__pyx_t_9 > __pyx_t_2);
+  if (__pyx_t_4) {
+    __pyx_t_7 = __pyx_t_9;
+  } else {
+    __pyx_t_7 = __pyx_t_2;
+  }
+  __pyx_t_9 = __pyx_t_7;
+  __pyx_t_7 = __pyx_v_t4;
+  __pyx_t_2 = __pyx_v_t3;
+  __pyx_t_4 = (__pyx_t_7 > __pyx_t_2);
+  if (__pyx_t_4) {
+    __pyx_t_8 = __pyx_t_7;
+  } else {
+    __pyx_t_8 = __pyx_t_2;
+  }
+  __pyx_t_7 = __pyx_t_8;
+  __pyx_t_8 = __pyx_v_t2;
+  __pyx_t_2 = __pyx_v_t1;
+  __pyx_t_4 = (__pyx_t_8 > __pyx_t_2);
+  if (__pyx_t_4) {
+    __pyx_t_5 = __pyx_t_8;
+  } else {
+    __pyx_t_5 = __pyx_t_2;
+  }
+  __pyx_t_8 = __pyx_t_5;
+  __pyx_t_4 = (__pyx_t_7 < __pyx_t_8);
+  if (__pyx_t_4) {
+    __pyx_t_5 = __pyx_t_7;
+  } else {
+    __pyx_t_5 = __pyx_t_8;
+  }
+  __pyx_t_7 = __pyx_t_5;
+  __pyx_t_4 = (__pyx_t_9 < __pyx_t_7);
+  if (__pyx_t_4) {
+    __pyx_t_5 = __pyx_t_9;
+  } else {
+    __pyx_t_5 = __pyx_t_7;
+  }
+  __pyx_v_tmax = __pyx_t_5;
+
+  /* "ray_tracer/engine/intersect.pyx":74
+ * 
+ *     # Conditions for a valid intersection
+ *     if tmax < 0 or tmin > tmax:             # <<<<<<<<<<<<<<
+ *         return False
+ * 
+ */
+  __pyx_t_10 = (__pyx_v_tmax < 0.0);
+  if (!__pyx_t_10) {
+  } else {
+    __pyx_t_4 = __pyx_t_10;
+    goto __pyx_L6_bool_binop_done;
+  }
+  __pyx_t_10 = (__pyx_v_tmin > __pyx_v_tmax);
+  __pyx_t_4 = __pyx_t_10;
+  __pyx_L6_bool_binop_done:;
+  if (__pyx_t_4) {
+
+    /* "ray_tracer/engine/intersect.pyx":75
+ *     # Conditions for a valid intersection
+ *     if tmax < 0 or tmin > tmax:
+ *         return False             # <<<<<<<<<<<<<<
+ * 
+ *     return True
+ */
+    __Pyx_XDECREF(__pyx_r);
+    __Pyx_INCREF(Py_False);
+    __pyx_r = Py_False;
+    goto __pyx_L0;
+
+    /* "ray_tracer/engine/intersect.pyx":74
+ * 
+ *     # Conditions for a valid intersection
+ *     if tmax < 0 or tmin > tmax:             # <<<<<<<<<<<<<<
+ *         return False
+ * 
+ */
+  }
+
+  /* "ray_tracer/engine/intersect.pyx":77
+ *         return False
+ * 
+ *     return True             # <<<<<<<<<<<<<<
+ * 
+ * @cython.boundscheck(False)  # Deactivate bounds checking
+ */
+  __Pyx_XDECREF(__pyx_r);
+  __Pyx_INCREF(Py_True);
+  __pyx_r = Py_True;
+  goto __pyx_L0;
+
+  /* "ray_tracer/engine/intersect.pyx":52
+ *         result[i] = vec1[i] - vec2[i]
+ * 
+ * @cython.boundscheck(False)  # Deactivate bounds checking             # <<<<<<<<<<<<<<
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
+ */
+
+  /* function exit code */
+  __pyx_L1_error:;
+  __Pyx_AddTraceback("ray_tracer.engine.intersect.ray_intersects_aabb", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __pyx_r = NULL;
+  __pyx_L0:;
+  __Pyx_XGIVEREF(__pyx_r);
+  __Pyx_RefNannyFinishContext();
+  return __pyx_r;
+}
+
+/* "ray_tracer/engine/intersect.pyx":82
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
  * cpdef double intersect(double[:] offset, double[:] direction, double[:, :] poly):             # <<<<<<<<<<<<<<
  *     cdef:
  *         double[:] intersect_point  # Changed to a memoryview
  */
 
-static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_3intersect(PyObject *__pyx_self, 
+static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_5intersect(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
 PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 #else
@@ -20462,49 +21162,149 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_intersect(__Pyx_memviewsli
   PyObject *__pyx_t_3 = NULL;
   PyObject *__pyx_t_4 = NULL;
   __Pyx_memviewslice __pyx_t_5 = { 0, 0, { 0 }, { 0 }, { 0 } };
-  double __pyx_t_6;
-  int __pyx_t_7;
-  __Pyx_memviewslice __pyx_t_8 = { 0, 0, { 0 }, { 0 }, { 0 } };
+  PyObject *__pyx_t_6 = NULL;
+  PyObject *__pyx_t_7 = NULL;
+  PyObject *__pyx_t_8 = NULL;
   int __pyx_t_9;
   int __pyx_t_10;
+  int __pyx_t_11;
+  double __pyx_t_12;
+  __Pyx_memviewslice __pyx_t_13 = { 0, 0, { 0 }, { 0 }, { 0 } };
   int __pyx_lineno = 0;
   const char *__pyx_filename = NULL;
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("intersect", 1);
 
-  /* "ray_tracer/engine/intersect.pyx":54
+  /* "ray_tracer/engine/intersect.pyx":85
  *     cdef:
  *         double[:] intersect_point  # Changed to a memoryview
  *         double[:] temp_subtract_result = npply.empty(3, dtype=npply.float64)             # <<<<<<<<<<<<<<
  *         double distance, projection
  * 
  */
-  __Pyx_GetModuleGlobalName(__pyx_t_1, __pyx_n_s_npply); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __Pyx_GetModuleGlobalName(__pyx_t_1, __pyx_n_s_npply); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __pyx_t_2 = __Pyx_PyObject_GetAttrStr(__pyx_t_1, __pyx_n_s_empty); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyObject_GetAttrStr(__pyx_t_1, __pyx_n_s_empty); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_1 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __pyx_t_1 = __Pyx_PyDict_NewPresized(1); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
-  __Pyx_GetModuleGlobalName(__pyx_t_3, __pyx_n_s_npply); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __Pyx_GetModuleGlobalName(__pyx_t_3, __pyx_n_s_npply); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_3);
-  __pyx_t_4 = __Pyx_PyObject_GetAttrStr(__pyx_t_3, __pyx_n_s_float64); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __pyx_t_4 = __Pyx_PyObject_GetAttrStr(__pyx_t_3, __pyx_n_s_float64); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
-  if (PyDict_SetItem(__pyx_t_1, __pyx_n_s_dtype, __pyx_t_4) < 0) __PYX_ERR(0, 54, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_t_1, __pyx_n_s_dtype, __pyx_t_4) < 0) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-  __pyx_t_4 = __Pyx_PyObject_Call(__pyx_t_2, __pyx_tuple__17, __pyx_t_1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __pyx_t_4 = __Pyx_PyObject_Call(__pyx_t_2, __pyx_tuple__17, __pyx_t_1); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_4);
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
-  __pyx_t_5 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(__pyx_t_4, PyBUF_WRITABLE); if (unlikely(!__pyx_t_5.memview)) __PYX_ERR(0, 54, __pyx_L1_error)
+  __pyx_t_5 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(__pyx_t_4, PyBUF_WRITABLE); if (unlikely(!__pyx_t_5.memview)) __PYX_ERR(0, 85, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
   __pyx_v_temp_subtract_result = __pyx_t_5;
   __pyx_t_5.memview = NULL;
   __pyx_t_5.data = NULL;
 
-  /* "ray_tracer/engine/intersect.pyx":57
+  /* "ray_tracer/engine/intersect.pyx":88
  *         double distance, projection
+ * 
+ *     if not ray_intersects_aabb(offset, direction, poly[4], poly[5]):             # <<<<<<<<<<<<<<
+ *         return -1.0
+ * 
+ */
+  __Pyx_GetModuleGlobalName(__pyx_t_1, __pyx_n_s_ray_intersects_aabb); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_1);
+  __pyx_t_2 = __pyx_memoryview_fromslice(__pyx_v_offset, 1, (PyObject *(*)(char *)) __pyx_memview_get_double, (int (*)(char *, PyObject *)) __pyx_memview_set_double, 0);; if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_2);
+  __pyx_t_3 = __pyx_memoryview_fromslice(__pyx_v_direction, 1, (PyObject *(*)(char *)) __pyx_memview_get_double, (int (*)(char *, PyObject *)) __pyx_memview_set_double, 0);; if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_3);
+  __pyx_t_5.data = __pyx_v_poly.data;
+  __pyx_t_5.memview = __pyx_v_poly.memview;
+  __PYX_INC_MEMVIEW(&__pyx_t_5, 1);
+  {
+    Py_ssize_t __pyx_tmp_idx = 4;
+    Py_ssize_t __pyx_tmp_stride = __pyx_v_poly.strides[0];
+        __pyx_t_5.data += __pyx_tmp_idx * __pyx_tmp_stride;
+}
+
+__pyx_t_5.shape[0] = __pyx_v_poly.shape[1];
+__pyx_t_5.strides[0] = __pyx_v_poly.strides[1];
+    __pyx_t_5.suboffsets[0] = -1;
+
+__pyx_t_6 = __pyx_memoryview_fromslice(__pyx_t_5, 1, (PyObject *(*)(char *)) __pyx_memview_get_double, (int (*)(char *, PyObject *)) __pyx_memview_set_double, 0);; if (unlikely(!__pyx_t_6)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_6);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
+  __pyx_t_5.memview = NULL; __pyx_t_5.data = NULL;
+  __pyx_t_5.data = __pyx_v_poly.data;
+  __pyx_t_5.memview = __pyx_v_poly.memview;
+  __PYX_INC_MEMVIEW(&__pyx_t_5, 1);
+  {
+    Py_ssize_t __pyx_tmp_idx = 5;
+    Py_ssize_t __pyx_tmp_stride = __pyx_v_poly.strides[0];
+        __pyx_t_5.data += __pyx_tmp_idx * __pyx_tmp_stride;
+}
+
+__pyx_t_5.shape[0] = __pyx_v_poly.shape[1];
+__pyx_t_5.strides[0] = __pyx_v_poly.strides[1];
+    __pyx_t_5.suboffsets[0] = -1;
+
+__pyx_t_7 = __pyx_memoryview_fromslice(__pyx_t_5, 1, (PyObject *(*)(char *)) __pyx_memview_get_double, (int (*)(char *, PyObject *)) __pyx_memview_set_double, 0);; if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_7);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
+  __pyx_t_5.memview = NULL; __pyx_t_5.data = NULL;
+  __pyx_t_8 = NULL;
+  __pyx_t_9 = 0;
+  #if CYTHON_UNPACK_METHODS
+  if (unlikely(PyMethod_Check(__pyx_t_1))) {
+    __pyx_t_8 = PyMethod_GET_SELF(__pyx_t_1);
+    if (likely(__pyx_t_8)) {
+      PyObject* function = PyMethod_GET_FUNCTION(__pyx_t_1);
+      __Pyx_INCREF(__pyx_t_8);
+      __Pyx_INCREF(function);
+      __Pyx_DECREF_SET(__pyx_t_1, function);
+      __pyx_t_9 = 1;
+    }
+  }
+  #endif
+  {
+    PyObject *__pyx_callargs[5] = {__pyx_t_8, __pyx_t_2, __pyx_t_3, __pyx_t_6, __pyx_t_7};
+    __pyx_t_4 = __Pyx_PyObject_FastCall(__pyx_t_1, __pyx_callargs+1-__pyx_t_9, 4+__pyx_t_9);
+    __Pyx_XDECREF(__pyx_t_8); __pyx_t_8 = 0;
+    __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
+    __Pyx_DECREF(__pyx_t_3); __pyx_t_3 = 0;
+    __Pyx_DECREF(__pyx_t_6); __pyx_t_6 = 0;
+    __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+    if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 88, __pyx_L1_error)
+    __Pyx_GOTREF(__pyx_t_4);
+    __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
+  }
+  __pyx_t_10 = __Pyx_PyObject_IsTrue(__pyx_t_4); if (unlikely((__pyx_t_10 < 0))) __PYX_ERR(0, 88, __pyx_L1_error)
+  __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
+  __pyx_t_11 = (!__pyx_t_10);
+  if (__pyx_t_11) {
+
+    /* "ray_tracer/engine/intersect.pyx":89
+ * 
+ *     if not ray_intersects_aabb(offset, direction, poly[4], poly[5]):
+ *         return -1.0             # <<<<<<<<<<<<<<
+ * 
+ *     projection = dot(direction, poly[3])
+ */
+    __pyx_r = -1.0;
+    goto __pyx_L0;
+
+    /* "ray_tracer/engine/intersect.pyx":88
+ *         double distance, projection
+ * 
+ *     if not ray_intersects_aabb(offset, direction, poly[4], poly[5]):             # <<<<<<<<<<<<<<
+ *         return -1.0
+ * 
+ */
+  }
+
+  /* "ray_tracer/engine/intersect.pyx":91
+ *         return -1.0
  * 
  *     projection = dot(direction, poly[3])             # <<<<<<<<<<<<<<
  * 
@@ -20515,15 +21315,7 @@ static double __pyx_f_10ray_tracer_6engine_9intersect_intersect(__Pyx_memviewsli
   __PYX_INC_MEMVIEW(&__pyx_t_5, 1);
   {
     Py_ssize_t __pyx_tmp_idx = 3;
-        Py_ssize_t __pyx_tmp_shape = __pyx_v_poly.shape[0];
     Py_ssize_t __pyx_tmp_stride = __pyx_v_poly.strides[0];
-        if (__pyx_tmp_idx < 0)
-            __pyx_tmp_idx += __pyx_tmp_shape;
-        if (unlikely(!__Pyx_is_valid_index(__pyx_tmp_idx, __pyx_tmp_shape))) {
-            PyErr_SetString(PyExc_IndexError,
-                            "Index out of bounds (axis 0)");
-            __PYX_ERR(0, 57, __pyx_L1_error)
-        }
         __pyx_t_5.data += __pyx_tmp_idx * __pyx_tmp_stride;
 }
 
@@ -20531,22 +21323,22 @@ __pyx_t_5.shape[0] = __pyx_v_poly.shape[1];
 __pyx_t_5.strides[0] = __pyx_v_poly.strides[1];
     __pyx_t_5.suboffsets[0] = -1;
 
-__pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_direction, __pyx_t_5); if (unlikely(__pyx_t_6 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 57, __pyx_L1_error)
+__pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_direction, __pyx_t_5); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 91, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
   __pyx_t_5.memview = NULL; __pyx_t_5.data = NULL;
-  __pyx_v_projection = __pyx_t_6;
+  __pyx_v_projection = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":59
+  /* "ray_tracer/engine/intersect.pyx":93
  *     projection = dot(direction, poly[3])
  * 
  *     if projection == 0:             # <<<<<<<<<<<<<<
  *         return -1.0
  * 
  */
-  __pyx_t_7 = (__pyx_v_projection == 0.0);
-  if (__pyx_t_7) {
+  __pyx_t_11 = (__pyx_v_projection == 0.0);
+  if (__pyx_t_11) {
 
-    /* "ray_tracer/engine/intersect.pyx":60
+    /* "ray_tracer/engine/intersect.pyx":94
  * 
  *     if projection == 0:
  *         return -1.0             # <<<<<<<<<<<<<<
@@ -20556,7 +21348,7 @@ __pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_direction, __pyx
     __pyx_r = -1.0;
     goto __pyx_L0;
 
-    /* "ray_tracer/engine/intersect.pyx":59
+    /* "ray_tracer/engine/intersect.pyx":93
  *     projection = dot(direction, poly[3])
  * 
  *     if projection == 0:             # <<<<<<<<<<<<<<
@@ -20565,7 +21357,7 @@ __pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_direction, __pyx
  */
   }
 
-  /* "ray_tracer/engine/intersect.pyx":63
+  /* "ray_tracer/engine/intersect.pyx":97
  * 
  *     # Correctly handle vector subtraction.
  *     subtract_vectors(poly[0], offset, temp_subtract_result)             # <<<<<<<<<<<<<<
@@ -20577,15 +21369,7 @@ __pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_direction, __pyx
   __PYX_INC_MEMVIEW(&__pyx_t_5, 1);
   {
     Py_ssize_t __pyx_tmp_idx = 0;
-        Py_ssize_t __pyx_tmp_shape = __pyx_v_poly.shape[0];
     Py_ssize_t __pyx_tmp_stride = __pyx_v_poly.strides[0];
-        if (__pyx_tmp_idx < 0)
-            __pyx_tmp_idx += __pyx_tmp_shape;
-        if (unlikely(!__Pyx_is_valid_index(__pyx_tmp_idx, __pyx_tmp_shape))) {
-            PyErr_SetString(PyExc_IndexError,
-                            "Index out of bounds (axis 0)");
-            __PYX_ERR(0, 63, __pyx_L1_error)
-        }
         __pyx_t_5.data += __pyx_tmp_idx * __pyx_tmp_stride;
 }
 
@@ -20593,11 +21377,11 @@ __pyx_t_5.shape[0] = __pyx_v_poly.shape[1];
 __pyx_t_5.strides[0] = __pyx_v_poly.strides[1];
     __pyx_t_5.suboffsets[0] = -1;
 
-__pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__pyx_t_5, __pyx_v_offset, __pyx_v_temp_subtract_result); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 63, __pyx_L1_error)
+__pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__pyx_t_5, __pyx_v_offset, __pyx_v_temp_subtract_result); if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 97, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
   __pyx_t_5.memview = NULL; __pyx_t_5.data = NULL;
 
-  /* "ray_tracer/engine/intersect.pyx":64
+  /* "ray_tracer/engine/intersect.pyx":98
  *     # Correctly handle vector subtraction.
  *     subtract_vectors(poly[0], offset, temp_subtract_result)
  *     distance = dot(temp_subtract_result, poly[3]) / projection             # <<<<<<<<<<<<<<
@@ -20609,15 +21393,7 @@ __pyx_f_10ray_tracer_6engine_9intersect_subtract_vectors(__pyx_t_5, __pyx_v_offs
   __PYX_INC_MEMVIEW(&__pyx_t_5, 1);
   {
     Py_ssize_t __pyx_tmp_idx = 3;
-        Py_ssize_t __pyx_tmp_shape = __pyx_v_poly.shape[0];
     Py_ssize_t __pyx_tmp_stride = __pyx_v_poly.strides[0];
-        if (__pyx_tmp_idx < 0)
-            __pyx_tmp_idx += __pyx_tmp_shape;
-        if (unlikely(!__Pyx_is_valid_index(__pyx_tmp_idx, __pyx_tmp_shape))) {
-            PyErr_SetString(PyExc_IndexError,
-                            "Index out of bounds (axis 0)");
-            __PYX_ERR(0, 64, __pyx_L1_error)
-        }
         __pyx_t_5.data += __pyx_tmp_idx * __pyx_tmp_stride;
 }
 
@@ -20625,40 +21401,36 @@ __pyx_t_5.shape[0] = __pyx_v_poly.shape[1];
 __pyx_t_5.strides[0] = __pyx_v_poly.strides[1];
     __pyx_t_5.suboffsets[0] = -1;
 
-__pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_temp_subtract_result, __pyx_t_5); if (unlikely(__pyx_t_6 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 64, __pyx_L1_error)
+__pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_temp_subtract_result, __pyx_t_5); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 98, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
   __pyx_t_5.memview = NULL; __pyx_t_5.data = NULL;
-  if (unlikely(__pyx_v_projection == 0)) {
-    PyErr_SetString(PyExc_ZeroDivisionError, "float division");
-    __PYX_ERR(0, 64, __pyx_L1_error)
-  }
-  __pyx_v_distance = (__pyx_t_6 / __pyx_v_projection);
+  __pyx_v_distance = (__pyx_t_12 / __pyx_v_projection);
 
-  /* "ray_tracer/engine/intersect.pyx":67
+  /* "ray_tracer/engine/intersect.pyx":101
  * 
  *     # Create the point inline to avoid function call overhead
  *     intersect_point = point_on_line(offset, direction, distance)             # <<<<<<<<<<<<<<
  * 
  *     if not is_inside(poly[0:3], intersect_point):
  */
-  __pyx_t_5 = __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(__pyx_v_offset, __pyx_v_direction, __pyx_v_distance); if (unlikely(!__pyx_t_5.memview)) __PYX_ERR(0, 67, __pyx_L1_error)
+  __pyx_t_5 = __pyx_f_10ray_tracer_6engine_9intersect_point_on_line(__pyx_v_offset, __pyx_v_direction, __pyx_v_distance); if (unlikely(!__pyx_t_5.memview)) __PYX_ERR(0, 101, __pyx_L1_error)
   __pyx_v_intersect_point = __pyx_t_5;
   __pyx_t_5.memview = NULL;
   __pyx_t_5.data = NULL;
 
-  /* "ray_tracer/engine/intersect.pyx":69
+  /* "ray_tracer/engine/intersect.pyx":103
  *     intersect_point = point_on_line(offset, direction, distance)
  * 
  *     if not is_inside(poly[0:3], intersect_point):             # <<<<<<<<<<<<<<
  *         return -1.0
  *     else:
  */
-  __pyx_t_8.data = __pyx_v_poly.data;
-  __pyx_t_8.memview = __pyx_v_poly.memview;
-  __PYX_INC_MEMVIEW(&__pyx_t_8, 1);
+  __pyx_t_13.data = __pyx_v_poly.data;
+  __pyx_t_13.memview = __pyx_v_poly.memview;
+  __PYX_INC_MEMVIEW(&__pyx_t_13, 1);
   __pyx_t_9 = -1;
   if (unlikely(__pyx_memoryview_slice_memviewslice(
-    &__pyx_t_8,
+    &__pyx_t_13,
     __pyx_v_poly.shape[0], __pyx_v_poly.strides[0], __pyx_v_poly.suboffsets[0],
     0,
     0,
@@ -20671,20 +21443,20 @@ __pyx_t_6 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_v_temp_subtract_re
     0,
     1) < 0))
 {
-    __PYX_ERR(0, 69, __pyx_L1_error)
+    __PYX_ERR(0, 103, __pyx_L1_error)
 }
 
-__pyx_t_8.shape[1] = __pyx_v_poly.shape[1];
-__pyx_t_8.strides[1] = __pyx_v_poly.strides[1];
-    __pyx_t_8.suboffsets[1] = -1;
+__pyx_t_13.shape[1] = __pyx_v_poly.shape[1];
+__pyx_t_13.strides[1] = __pyx_v_poly.strides[1];
+    __pyx_t_13.suboffsets[1] = -1;
 
-__pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v_intersect_point); if (unlikely(__pyx_t_7 == ((int)-1) && PyErr_Occurred())) __PYX_ERR(0, 69, __pyx_L1_error)
-  __PYX_XCLEAR_MEMVIEW(&__pyx_t_8, 1);
-  __pyx_t_8.memview = NULL; __pyx_t_8.data = NULL;
-  __pyx_t_10 = (!__pyx_t_7);
+__pyx_t_11 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_13, __pyx_v_intersect_point); if (unlikely(__pyx_t_11 == ((int)-1) && PyErr_Occurred())) __PYX_ERR(0, 103, __pyx_L1_error)
+  __PYX_XCLEAR_MEMVIEW(&__pyx_t_13, 1);
+  __pyx_t_13.memview = NULL; __pyx_t_13.data = NULL;
+  __pyx_t_10 = (!__pyx_t_11);
   if (__pyx_t_10) {
 
-    /* "ray_tracer/engine/intersect.pyx":70
+    /* "ray_tracer/engine/intersect.pyx":104
  * 
  *     if not is_inside(poly[0:3], intersect_point):
  *         return -1.0             # <<<<<<<<<<<<<<
@@ -20694,7 +21466,7 @@ __pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v
     __pyx_r = -1.0;
     goto __pyx_L0;
 
-    /* "ray_tracer/engine/intersect.pyx":69
+    /* "ray_tracer/engine/intersect.pyx":103
  *     intersect_point = point_on_line(offset, direction, distance)
  * 
  *     if not is_inside(poly[0:3], intersect_point):             # <<<<<<<<<<<<<<
@@ -20703,7 +21475,7 @@ __pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v
  */
   }
 
-  /* "ray_tracer/engine/intersect.pyx":72
+  /* "ray_tracer/engine/intersect.pyx":106
  *         return -1.0
  *     else:
  *         return distance             # <<<<<<<<<<<<<<
@@ -20715,9 +21487,9 @@ __pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v
     goto __pyx_L0;
   }
 
-  /* "ray_tracer/engine/intersect.pyx":51
- *         result[i] = vec1[i] - vec2[i]
- * 
+  /* "ray_tracer/engine/intersect.pyx":82
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
  * cpdef double intersect(double[:] offset, double[:] direction, double[:, :] poly):             # <<<<<<<<<<<<<<
  *     cdef:
  *         double[:] intersect_point  # Changed to a memoryview
@@ -20730,7 +21502,10 @@ __pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v
   __Pyx_XDECREF(__pyx_t_3);
   __Pyx_XDECREF(__pyx_t_4);
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_5, 1);
-  __PYX_XCLEAR_MEMVIEW(&__pyx_t_8, 1);
+  __Pyx_XDECREF(__pyx_t_6);
+  __Pyx_XDECREF(__pyx_t_7);
+  __Pyx_XDECREF(__pyx_t_8);
+  __PYX_XCLEAR_MEMVIEW(&__pyx_t_13, 1);
   __Pyx_AddTraceback("ray_tracer.engine.intersect.intersect", __pyx_clineno, __pyx_lineno, __pyx_filename);
   __pyx_r = -1;
   __pyx_L0:;
@@ -20741,15 +21516,15 @@ __pyx_t_7 = __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__pyx_t_8, __pyx_v
 }
 
 /* Python wrapper */
-static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_3intersect(PyObject *__pyx_self, 
+static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_5intersect(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
 PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 #else
 PyObject *__pyx_args, PyObject *__pyx_kwds
 #endif
 ); /*proto*/
-static PyMethodDef __pyx_mdef_10ray_tracer_6engine_9intersect_3intersect = {"intersect", (PyCFunction)(void*)(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_10ray_tracer_6engine_9intersect_3intersect, __Pyx_METH_FASTCALL|METH_KEYWORDS, 0};
-static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_3intersect(PyObject *__pyx_self, 
+static PyMethodDef __pyx_mdef_10ray_tracer_6engine_9intersect_5intersect = {"intersect", (PyCFunction)(void*)(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_10ray_tracer_6engine_9intersect_5intersect, __Pyx_METH_FASTCALL|METH_KEYWORDS, 0};
+static PyObject *__pyx_pw_10ray_tracer_6engine_9intersect_5intersect(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
 PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 #else
@@ -20799,7 +21574,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 51, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 82, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
         CYTHON_FALLTHROUGH;
         case  1:
@@ -20807,9 +21582,9 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[1]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 51, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 82, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, 1); __PYX_ERR(0, 51, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, 1); __PYX_ERR(0, 82, __pyx_L3_error)
         }
         CYTHON_FALLTHROUGH;
         case  2:
@@ -20817,14 +21592,14 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[2]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 51, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 82, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, 2); __PYX_ERR(0, 51, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, 2); __PYX_ERR(0, 82, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "intersect") < 0)) __PYX_ERR(0, 51, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "intersect") < 0)) __PYX_ERR(0, 82, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 3)) {
       goto __pyx_L5_argtuple_error;
@@ -20833,13 +21608,13 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
       values[1] = __Pyx_Arg_FASTCALL(__pyx_args, 1);
       values[2] = __Pyx_Arg_FASTCALL(__pyx_args, 2);
     }
-    __pyx_v_offset = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[0], PyBUF_WRITABLE); if (unlikely(!__pyx_v_offset.memview)) __PYX_ERR(0, 51, __pyx_L3_error)
-    __pyx_v_direction = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[1], PyBUF_WRITABLE); if (unlikely(!__pyx_v_direction.memview)) __PYX_ERR(0, 51, __pyx_L3_error)
-    __pyx_v_poly = __Pyx_PyObject_to_MemoryviewSlice_dsds_double(values[2], PyBUF_WRITABLE); if (unlikely(!__pyx_v_poly.memview)) __PYX_ERR(0, 51, __pyx_L3_error)
+    __pyx_v_offset = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[0], PyBUF_WRITABLE); if (unlikely(!__pyx_v_offset.memview)) __PYX_ERR(0, 82, __pyx_L3_error)
+    __pyx_v_direction = __Pyx_PyObject_to_MemoryviewSlice_ds_double(values[1], PyBUF_WRITABLE); if (unlikely(!__pyx_v_direction.memview)) __PYX_ERR(0, 82, __pyx_L3_error)
+    __pyx_v_poly = __Pyx_PyObject_to_MemoryviewSlice_dsds_double(values[2], PyBUF_WRITABLE); if (unlikely(!__pyx_v_poly.memview)) __PYX_ERR(0, 82, __pyx_L3_error)
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, __pyx_nargs); __PYX_ERR(0, 51, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("intersect", 1, 3, 3, __pyx_nargs); __PYX_ERR(0, 82, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -20856,7 +21631,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  __pyx_r = __pyx_pf_10ray_tracer_6engine_9intersect_2intersect(__pyx_self, __pyx_v_offset, __pyx_v_direction, __pyx_v_poly);
+  __pyx_r = __pyx_pf_10ray_tracer_6engine_9intersect_4intersect(__pyx_self, __pyx_v_offset, __pyx_v_direction, __pyx_v_poly);
 
   /* function exit code */
   __PYX_XCLEAR_MEMVIEW(&__pyx_v_offset, 1);
@@ -20872,7 +21647,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   return __pyx_r;
 }
 
-static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2intersect(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_offset, __Pyx_memviewslice __pyx_v_direction, __Pyx_memviewslice __pyx_v_poly) {
+static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_4intersect(CYTHON_UNUSED PyObject *__pyx_self, __Pyx_memviewslice __pyx_v_offset, __Pyx_memviewslice __pyx_v_direction, __Pyx_memviewslice __pyx_v_poly) {
   PyObject *__pyx_r = NULL;
   __Pyx_RefNannyDeclarations
   double __pyx_t_1;
@@ -20882,11 +21657,11 @@ static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2intersect(CYTHON_UNUS
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("intersect", 1);
   __Pyx_XDECREF(__pyx_r);
-  if (unlikely(!__pyx_v_offset.memview)) { __Pyx_RaiseUnboundLocalError("offset"); __PYX_ERR(0, 51, __pyx_L1_error) }
-  if (unlikely(!__pyx_v_direction.memview)) { __Pyx_RaiseUnboundLocalError("direction"); __PYX_ERR(0, 51, __pyx_L1_error) }
-  if (unlikely(!__pyx_v_poly.memview)) { __Pyx_RaiseUnboundLocalError("poly"); __PYX_ERR(0, 51, __pyx_L1_error) }
-  __pyx_t_1 = __pyx_f_10ray_tracer_6engine_9intersect_intersect(__pyx_v_offset, __pyx_v_direction, __pyx_v_poly, 0); if (unlikely(__pyx_t_1 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 51, __pyx_L1_error)
-  __pyx_t_2 = PyFloat_FromDouble(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 51, __pyx_L1_error)
+  if (unlikely(!__pyx_v_offset.memview)) { __Pyx_RaiseUnboundLocalError("offset"); __PYX_ERR(0, 82, __pyx_L1_error) }
+  if (unlikely(!__pyx_v_direction.memview)) { __Pyx_RaiseUnboundLocalError("direction"); __PYX_ERR(0, 82, __pyx_L1_error) }
+  if (unlikely(!__pyx_v_poly.memview)) { __Pyx_RaiseUnboundLocalError("poly"); __PYX_ERR(0, 82, __pyx_L1_error) }
+  __pyx_t_1 = __pyx_f_10ray_tracer_6engine_9intersect_intersect(__pyx_v_offset, __pyx_v_direction, __pyx_v_poly, 0); if (unlikely(__pyx_t_1 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 82, __pyx_L1_error)
+  __pyx_t_2 = PyFloat_FromDouble(__pyx_t_1); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 82, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   __pyx_r = __pyx_t_2;
   __pyx_t_2 = 0;
@@ -20903,7 +21678,7 @@ static PyObject *__pyx_pf_10ray_tracer_6engine_9intersect_2intersect(CYTHON_UNUS
   return __pyx_r;
 }
 
-/* "ray_tracer/engine/intersect.pyx":74
+/* "ray_tracer/engine/intersect.pyx":108
  *         return distance
  * 
  * cdef bint is_inside(double[:, :] poly, double[:] point):             # <<<<<<<<<<<<<<
@@ -20945,7 +21720,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("is_inside", 1);
 
-  /* "ray_tracer/engine/intersect.pyx":81
+  /* "ray_tracer/engine/intersect.pyx":115
  * 
  *     # Optimize subtraction operation here
  *     for i in range(3):             # <<<<<<<<<<<<<<
@@ -20955,7 +21730,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
   for (__pyx_t_1 = 0; __pyx_t_1 < 3; __pyx_t_1+=1) {
     __pyx_v_i = __pyx_t_1;
 
-    /* "ray_tracer/engine/intersect.pyx":82
+    /* "ray_tracer/engine/intersect.pyx":116
  *     # Optimize subtraction operation here
  *     for i in range(3):
  *         v0[i] = poly[2, i] - poly[0, i]             # <<<<<<<<<<<<<<
@@ -20975,7 +21750,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_3 >= __pyx_v_poly.shape[1])) __pyx_t_4 = 1;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 82, __pyx_L1_error)
+      __PYX_ERR(0, 116, __pyx_L1_error)
     }
     __pyx_t_5 = 0;
     __pyx_t_6 = __pyx_v_i;
@@ -20990,11 +21765,11 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_6 >= __pyx_v_poly.shape[1])) __pyx_t_4 = 1;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 82, __pyx_L1_error)
+      __PYX_ERR(0, 116, __pyx_L1_error)
     }
     (__pyx_v_v0[__pyx_v_i]) = ((*((double *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_poly.data + __pyx_t_2 * __pyx_v_poly.strides[0]) ) + __pyx_t_3 * __pyx_v_poly.strides[1]) ))) - (*((double *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_poly.data + __pyx_t_5 * __pyx_v_poly.strides[0]) ) + __pyx_t_6 * __pyx_v_poly.strides[1]) ))));
 
-    /* "ray_tracer/engine/intersect.pyx":83
+    /* "ray_tracer/engine/intersect.pyx":117
  *     for i in range(3):
  *         v0[i] = poly[2, i] - poly[0, i]
  *         v1[i] = poly[1, i] - poly[0, i]             # <<<<<<<<<<<<<<
@@ -21014,7 +21789,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_5 >= __pyx_v_poly.shape[1])) __pyx_t_4 = 1;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 83, __pyx_L1_error)
+      __PYX_ERR(0, 117, __pyx_L1_error)
     }
     __pyx_t_3 = 0;
     __pyx_t_2 = __pyx_v_i;
@@ -21029,11 +21804,11 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_2 >= __pyx_v_poly.shape[1])) __pyx_t_4 = 1;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 83, __pyx_L1_error)
+      __PYX_ERR(0, 117, __pyx_L1_error)
     }
     (__pyx_v_v1[__pyx_v_i]) = ((*((double *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_poly.data + __pyx_t_6 * __pyx_v_poly.strides[0]) ) + __pyx_t_5 * __pyx_v_poly.strides[1]) ))) - (*((double *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_poly.data + __pyx_t_3 * __pyx_v_poly.strides[0]) ) + __pyx_t_2 * __pyx_v_poly.strides[1]) ))));
 
-    /* "ray_tracer/engine/intersect.pyx":84
+    /* "ray_tracer/engine/intersect.pyx":118
  *         v0[i] = poly[2, i] - poly[0, i]
  *         v1[i] = poly[1, i] - poly[0, i]
  *         v2[i] = point[i] - poly[0, i]             # <<<<<<<<<<<<<<
@@ -21048,7 +21823,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_2 >= __pyx_v_point.shape[0])) __pyx_t_4 = 0;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 84, __pyx_L1_error)
+      __PYX_ERR(0, 118, __pyx_L1_error)
     }
     __pyx_t_3 = 0;
     __pyx_t_5 = __pyx_v_i;
@@ -21063,182 +21838,182 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
     } else if (unlikely(__pyx_t_5 >= __pyx_v_poly.shape[1])) __pyx_t_4 = 1;
     if (unlikely(__pyx_t_4 != -1)) {
       __Pyx_RaiseBufferIndexError(__pyx_t_4);
-      __PYX_ERR(0, 84, __pyx_L1_error)
+      __PYX_ERR(0, 118, __pyx_L1_error)
     }
     (__pyx_v_v2[__pyx_v_i]) = ((*((double *) ( /* dim=0 */ (__pyx_v_point.data + __pyx_t_2 * __pyx_v_point.strides[0]) ))) - (*((double *) ( /* dim=1 */ (( /* dim=0 */ (__pyx_v_poly.data + __pyx_t_3 * __pyx_v_poly.strides[0]) ) + __pyx_t_5 * __pyx_v_poly.strides[1]) ))));
   }
 
-  /* "ray_tracer/engine/intersect.pyx":86
+  /* "ray_tracer/engine/intersect.pyx":120
  *         v2[i] = point[i] - poly[0, i]
  * 
  *     dot00 = dot(v0, v0)             # <<<<<<<<<<<<<<
  *     dot01 = dot(v0, v1)
  *     dot02 = dot(v0, v2)
  */
-  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
-  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 120, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 86, __pyx_L1_error)
+  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 120, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_10, 1);
   __pyx_t_10.memview = NULL; __pyx_t_10.data = NULL;
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_11, 1);
   __pyx_t_11.memview = NULL; __pyx_t_11.data = NULL;
   __pyx_v_dot00 = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":87
+  /* "ray_tracer/engine/intersect.pyx":121
  * 
  *     dot00 = dot(v0, v0)
  *     dot01 = dot(v0, v1)             # <<<<<<<<<<<<<<
  *     dot02 = dot(v0, v2)
  *     dot11 = dot(v1, v1)
  */
-  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
-  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 121, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_11, __pyx_t_10); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 87, __pyx_L1_error)
+  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_11, __pyx_t_10); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 121, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_11, 1);
   __pyx_t_11.memview = NULL; __pyx_t_11.data = NULL;
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_10, 1);
   __pyx_t_10.memview = NULL; __pyx_t_10.data = NULL;
   __pyx_v_dot01 = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":88
+  /* "ray_tracer/engine/intersect.pyx":122
  *     dot00 = dot(v0, v0)
  *     dot01 = dot(v0, v1)
  *     dot02 = dot(v0, v2)             # <<<<<<<<<<<<<<
  *     dot11 = dot(v1, v1)
  *     dot12 = dot(v1, v2)
  */
-  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v0); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
-  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v2); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v2); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 122, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 88, __pyx_L1_error)
+  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 122, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_10, 1);
   __pyx_t_10.memview = NULL; __pyx_t_10.data = NULL;
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_11, 1);
   __pyx_t_11.memview = NULL; __pyx_t_11.data = NULL;
   __pyx_v_dot02 = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":89
+  /* "ray_tracer/engine/intersect.pyx":123
  *     dot01 = dot(v0, v1)
  *     dot02 = dot(v0, v2)
  *     dot11 = dot(v1, v1)             # <<<<<<<<<<<<<<
  *     dot12 = dot(v1, v2)
  * 
  */
-  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
-  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 123, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_11, __pyx_t_10); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 89, __pyx_L1_error)
+  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_11, __pyx_t_10); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 123, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_11, 1);
   __pyx_t_11.memview = NULL; __pyx_t_11.data = NULL;
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_10, 1);
   __pyx_t_10.memview = NULL; __pyx_t_10.data = NULL;
   __pyx_v_dot11 = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":90
+  /* "ray_tracer/engine/intersect.pyx":124
  *     dot02 = dot(v0, v2)
  *     dot11 = dot(v1, v1)
  *     dot12 = dot(v1, v2)             # <<<<<<<<<<<<<<
  * 
  *     # Avoid repeated calculation by computing the inverse of the denominator.
  */
-  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_9 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_8 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_8, sizeof(double), PyBytes_AS_STRING(__pyx_t_9), (char *) "fortran", (char *) __pyx_v_v1); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
-  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_10 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_10.memview)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_8 = __pyx_format_from_typeinfo(&__Pyx_TypeInfo_double); if (unlikely(!__pyx_t_8)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_8);
-  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_9 = Py_BuildValue((char*) "("  __PYX_BUILD_PY_SSIZE_T  ")", ((Py_ssize_t)3)); if (unlikely(!__pyx_t_9)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_9);
-  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v2); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_7 = __pyx_array_new(__pyx_t_9, sizeof(double), PyBytes_AS_STRING(__pyx_t_8), (char *) "fortran", (char *) __pyx_v_v2); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_GOTREF((PyObject *)__pyx_t_7);
   __Pyx_DECREF(__pyx_t_9); __pyx_t_9 = 0;
   __Pyx_DECREF(__pyx_t_8); __pyx_t_8 = 0;
-  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_11 = __Pyx_PyObject_to_MemoryviewSlice_ds_double(((PyObject *)__pyx_t_7), PyBUF_WRITABLE); if (unlikely(!__pyx_t_11.memview)) __PYX_ERR(0, 124, __pyx_L1_error)
   __Pyx_DECREF((PyObject *)__pyx_t_7); __pyx_t_7 = 0;
-  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 90, __pyx_L1_error)
+  __pyx_t_12 = __pyx_f_10ray_tracer_6engine_9intersect_dot(__pyx_t_10, __pyx_t_11); if (unlikely(__pyx_t_12 == ((double)-1) && PyErr_Occurred())) __PYX_ERR(0, 124, __pyx_L1_error)
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_10, 1);
   __pyx_t_10.memview = NULL; __pyx_t_10.data = NULL;
   __PYX_XCLEAR_MEMVIEW(&__pyx_t_11, 1);
   __pyx_t_11.memview = NULL; __pyx_t_11.data = NULL;
   __pyx_v_dot12 = __pyx_t_12;
 
-  /* "ray_tracer/engine/intersect.pyx":93
+  /* "ray_tracer/engine/intersect.pyx":127
  * 
  *     # Avoid repeated calculation by computing the inverse of the denominator.
  *     invDenom = 1.0 / (dot00 * dot11 - dot01 * dot01)             # <<<<<<<<<<<<<<
@@ -21248,11 +22023,11 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
   __pyx_t_12 = ((__pyx_v_dot00 * __pyx_v_dot11) - (__pyx_v_dot01 * __pyx_v_dot01));
   if (unlikely(__pyx_t_12 == 0)) {
     PyErr_SetString(PyExc_ZeroDivisionError, "float division");
-    __PYX_ERR(0, 93, __pyx_L1_error)
+    __PYX_ERR(0, 127, __pyx_L1_error)
   }
   __pyx_v_invDenom = (1.0 / __pyx_t_12);
 
-  /* "ray_tracer/engine/intersect.pyx":94
+  /* "ray_tracer/engine/intersect.pyx":128
  *     # Avoid repeated calculation by computing the inverse of the denominator.
  *     invDenom = 1.0 / (dot00 * dot11 - dot01 * dot01)
  *     u = (dot11 * dot02 - dot01 * dot12) * invDenom             # <<<<<<<<<<<<<<
@@ -21261,7 +22036,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
  */
   __pyx_v_u = (((__pyx_v_dot11 * __pyx_v_dot02) - (__pyx_v_dot01 * __pyx_v_dot12)) * __pyx_v_invDenom);
 
-  /* "ray_tracer/engine/intersect.pyx":95
+  /* "ray_tracer/engine/intersect.pyx":129
  *     invDenom = 1.0 / (dot00 * dot11 - dot01 * dot01)
  *     u = (dot11 * dot02 - dot01 * dot12) * invDenom
  *     v = (dot00 * dot12 - dot01 * dot02) * invDenom             # <<<<<<<<<<<<<<
@@ -21270,7 +22045,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
  */
   __pyx_v_v = (((__pyx_v_dot00 * __pyx_v_dot12) - (__pyx_v_dot01 * __pyx_v_dot02)) * __pyx_v_invDenom);
 
-  /* "ray_tracer/engine/intersect.pyx":97
+  /* "ray_tracer/engine/intersect.pyx":131
  *     v = (dot00 * dot12 - dot01 * dot02) * invDenom
  * 
  *     return (u >= 0) and (v >= 0) and (u + v < 1)             # <<<<<<<<<<<<<<
@@ -21293,7 +22068,7 @@ static int __pyx_f_10ray_tracer_6engine_9intersect_is_inside(__Pyx_memviewslice 
   __pyx_r = __pyx_t_13;
   goto __pyx_L0;
 
-  /* "ray_tracer/engine/intersect.pyx":74
+  /* "ray_tracer/engine/intersect.pyx":108
  *         return distance
  * 
  * cdef bint is_inside(double[:, :] poly, double[:] point):             # <<<<<<<<<<<<<<
@@ -22317,10 +23092,12 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
     {&__pyx_kp_u__14, __pyx_k__14, sizeof(__pyx_k__14), 0, 1, 0, 0},
     {&__pyx_kp_u__2, __pyx_k__2, sizeof(__pyx_k__2), 0, 1, 0, 0},
     {&__pyx_n_s__3, __pyx_k__3, sizeof(__pyx_k__3), 0, 0, 1, 1},
-    {&__pyx_n_s__33, __pyx_k__33, sizeof(__pyx_k__33), 0, 0, 1, 1},
+    {&__pyx_n_s__35, __pyx_k__35, sizeof(__pyx_k__35), 0, 0, 1, 1},
     {&__pyx_kp_u__6, __pyx_k__6, sizeof(__pyx_k__6), 0, 1, 0, 0},
     {&__pyx_kp_u__7, __pyx_k__7, sizeof(__pyx_k__7), 0, 1, 0, 0},
     {&__pyx_kp_b__9, __pyx_k__9, sizeof(__pyx_k__9), 0, 0, 0, 0},
+    {&__pyx_n_s_aabb_max, __pyx_k_aabb_max, sizeof(__pyx_k_aabb_max), 0, 0, 1, 1},
+    {&__pyx_n_s_aabb_min, __pyx_k_aabb_min, sizeof(__pyx_k_aabb_min), 0, 0, 1, 1},
     {&__pyx_n_s_abc, __pyx_k_abc, sizeof(__pyx_k_abc), 0, 0, 1, 1},
     {&__pyx_n_s_all_distances, __pyx_k_all_distances, sizeof(__pyx_k_all_distances), 0, 0, 1, 1},
     {&__pyx_n_s_allocate_buffer, __pyx_k_allocate_buffer, sizeof(__pyx_k_allocate_buffer), 0, 0, 1, 1},
@@ -22339,6 +23116,7 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
     {&__pyx_n_s_count, __pyx_k_count, sizeof(__pyx_k_count), 0, 0, 1, 1},
     {&__pyx_n_s_d, __pyx_k_d, sizeof(__pyx_k_d), 0, 0, 1, 1},
     {&__pyx_n_s_dict, __pyx_k_dict, sizeof(__pyx_k_dict), 0, 0, 1, 1},
+    {&__pyx_n_s_dir_fraction, __pyx_k_dir_fraction, sizeof(__pyx_k_dir_fraction), 0, 0, 1, 1},
     {&__pyx_n_s_direction, __pyx_k_direction, sizeof(__pyx_k_direction), 0, 0, 1, 1},
     {&__pyx_kp_u_disable, __pyx_k_disable, sizeof(__pyx_k_disable), 0, 1, 0, 0},
     {&__pyx_n_s_dtype, __pyx_k_dtype, sizeof(__pyx_k_dtype), 0, 0, 1, 1},
@@ -22357,9 +23135,11 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
     {&__pyx_n_s_getstate, __pyx_k_getstate, sizeof(__pyx_k_getstate), 0, 0, 1, 1},
     {&__pyx_kp_u_got, __pyx_k_got, sizeof(__pyx_k_got), 0, 1, 0, 0},
     {&__pyx_kp_u_got_differing_extents_in_dimensi, __pyx_k_got_differing_extents_in_dimensi, sizeof(__pyx_k_got_differing_extents_in_dimensi), 0, 1, 0, 0},
+    {&__pyx_n_s_i, __pyx_k_i, sizeof(__pyx_k_i), 0, 0, 1, 1},
     {&__pyx_n_s_id, __pyx_k_id, sizeof(__pyx_k_id), 0, 0, 1, 1},
     {&__pyx_n_s_import, __pyx_k_import, sizeof(__pyx_k_import), 0, 0, 1, 1},
     {&__pyx_n_s_index, __pyx_k_index, sizeof(__pyx_k_index), 0, 0, 1, 1},
+    {&__pyx_n_s_inf, __pyx_k_inf, sizeof(__pyx_k_inf), 0, 0, 1, 1},
     {&__pyx_n_s_initializing, __pyx_k_initializing, sizeof(__pyx_k_initializing), 0, 0, 1, 1},
     {&__pyx_n_s_intersect, __pyx_k_intersect, sizeof(__pyx_k_intersect), 0, 0, 1, 1},
     {&__pyx_n_s_is_coroutine, __pyx_k_is_coroutine, sizeof(__pyx_k_is_coroutine), 0, 0, 1, 1},
@@ -22392,6 +23172,9 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
     {&__pyx_n_s_pyx_unpickle_Enum, __pyx_k_pyx_unpickle_Enum, sizeof(__pyx_k_pyx_unpickle_Enum), 0, 0, 1, 1},
     {&__pyx_n_s_pyx_vtable, __pyx_k_pyx_vtable, sizeof(__pyx_k_pyx_vtable), 0, 0, 1, 1},
     {&__pyx_n_s_range, __pyx_k_range, sizeof(__pyx_k_range), 0, 0, 1, 1},
+    {&__pyx_n_s_ray_direction, __pyx_k_ray_direction, sizeof(__pyx_k_ray_direction), 0, 0, 1, 1},
+    {&__pyx_n_s_ray_intersects_aabb, __pyx_k_ray_intersects_aabb, sizeof(__pyx_k_ray_intersects_aabb), 0, 0, 1, 1},
+    {&__pyx_n_s_ray_origin, __pyx_k_ray_origin, sizeof(__pyx_k_ray_origin), 0, 0, 1, 1},
     {&__pyx_n_s_ray_tracer_engine_intersect, __pyx_k_ray_tracer_engine_intersect, sizeof(__pyx_k_ray_tracer_engine_intersect), 0, 0, 1, 1},
     {&__pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_k_ray_tracer_engine_intersect_pyx, sizeof(__pyx_k_ray_tracer_engine_intersect_pyx), 0, 0, 1, 0},
     {&__pyx_n_s_reduce, __pyx_k_reduce, sizeof(__pyx_k_reduce), 0, 0, 1, 1},
@@ -22412,7 +23195,15 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
     {&__pyx_kp_s_stringsource, __pyx_k_stringsource, sizeof(__pyx_k_stringsource), 0, 0, 1, 0},
     {&__pyx_n_s_struct, __pyx_k_struct, sizeof(__pyx_k_struct), 0, 0, 1, 1},
     {&__pyx_n_s_sys, __pyx_k_sys, sizeof(__pyx_k_sys), 0, 0, 1, 1},
+    {&__pyx_n_s_t1, __pyx_k_t1, sizeof(__pyx_k_t1), 0, 0, 1, 1},
+    {&__pyx_n_s_t2, __pyx_k_t2, sizeof(__pyx_k_t2), 0, 0, 1, 1},
+    {&__pyx_n_s_t3, __pyx_k_t3, sizeof(__pyx_k_t3), 0, 0, 1, 1},
+    {&__pyx_n_s_t4, __pyx_k_t4, sizeof(__pyx_k_t4), 0, 0, 1, 1},
+    {&__pyx_n_s_t5, __pyx_k_t5, sizeof(__pyx_k_t5), 0, 0, 1, 1},
+    {&__pyx_n_s_t6, __pyx_k_t6, sizeof(__pyx_k_t6), 0, 0, 1, 1},
     {&__pyx_n_s_test, __pyx_k_test, sizeof(__pyx_k_test), 0, 0, 1, 1},
+    {&__pyx_n_s_tmax, __pyx_k_tmax, sizeof(__pyx_k_tmax), 0, 0, 1, 1},
+    {&__pyx_n_s_tmin, __pyx_k_tmin, sizeof(__pyx_k_tmin), 0, 0, 1, 1},
     {&__pyx_kp_s_unable_to_allocate_array_data, __pyx_k_unable_to_allocate_array_data, sizeof(__pyx_k_unable_to_allocate_array_data), 0, 0, 1, 0},
     {&__pyx_kp_s_unable_to_allocate_shape_and_str, __pyx_k_unable_to_allocate_shape_and_str, sizeof(__pyx_k_unable_to_allocate_shape_and_str), 0, 0, 1, 0},
     {&__pyx_n_s_unpack, __pyx_k_unpack, sizeof(__pyx_k_unpack), 0, 0, 1, 1},
@@ -22426,7 +23217,7 @@ static int __Pyx_CreateStringTabAndInitStrings(void) {
 }
 /* #### Code section: cached_builtins ### */
 static CYTHON_SMALL_CODE int __Pyx_InitCachedBuiltins(void) {
-  __pyx_builtin_range = __Pyx_GetBuiltinName(__pyx_n_s_range); if (!__pyx_builtin_range) __PYX_ERR(0, 19, __pyx_L1_error)
+  __pyx_builtin_range = __Pyx_GetBuiltinName(__pyx_n_s_range); if (!__pyx_builtin_range) __PYX_ERR(0, 20, __pyx_L1_error)
   __pyx_builtin___import__ = __Pyx_GetBuiltinName(__pyx_n_s_import); if (!__pyx_builtin___import__) __PYX_ERR(1, 100, __pyx_L1_error)
   __pyx_builtin_ValueError = __Pyx_GetBuiltinName(__pyx_n_s_ValueError); if (!__pyx_builtin_ValueError) __PYX_ERR(1, 141, __pyx_L1_error)
   __pyx_builtin_MemoryError = __Pyx_GetBuiltinName(__pyx_n_s_MemoryError); if (!__pyx_builtin_MemoryError) __PYX_ERR(1, 156, __pyx_L1_error)
@@ -22505,14 +23296,14 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
   __Pyx_GOTREF(__pyx_tuple__16);
   __Pyx_GIVEREF(__pyx_tuple__16);
 
-  /* "ray_tracer/engine/intersect.pyx":40
+  /* "ray_tracer/engine/intersect.pyx":41
  * 
  *     # Create a Cython array from the C array. This array is heap-allocated and can be returned safely.
  *     cdef double[:] result_view = cvarray(shape=(3,), itemsize=sizeof(double), format="d")             # <<<<<<<<<<<<<<
  *     for i in range(3):
  *         result_view[i] = result_arr[i]
  */
-  __pyx_tuple__17 = PyTuple_Pack(1, __pyx_int_3); if (unlikely(!__pyx_tuple__17)) __PYX_ERR(0, 40, __pyx_L1_error)
+  __pyx_tuple__17 = PyTuple_Pack(1, __pyx_int_3); if (unlikely(!__pyx_tuple__17)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__17);
   __Pyx_GIVEREF(__pyx_tuple__17);
 
@@ -22617,29 +23408,41 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
   __Pyx_GIVEREF(__pyx_tuple__27);
   __pyx_codeobj__28 = (PyObject*)__Pyx_PyCode_New(3, 0, 0, 5, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__27, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_stringsource, __pyx_n_s_pyx_unpickle_Enum, 1, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__28)) __PYX_ERR(1, 1, __pyx_L1_error)
 
-  /* "ray_tracer/engine/intersect.pyx":11
+  /* "ray_tracer/engine/intersect.pyx":12
  * from libc.math cimport sqrt
  * 
  * cpdef np.ndarray[np.float64_t] all_distances(np.ndarray[np.float64_t] offset, np.ndarray[np.float64_t] direction,             # <<<<<<<<<<<<<<
  *                                             np.ndarray[np.float64_t, ndim = 3] world):
  *     cdef int i
  */
-  __pyx_tuple__29 = PyTuple_Pack(3, __pyx_n_s_offset, __pyx_n_s_direction, __pyx_n_s_world); if (unlikely(!__pyx_tuple__29)) __PYX_ERR(0, 11, __pyx_L1_error)
+  __pyx_tuple__29 = PyTuple_Pack(3, __pyx_n_s_offset, __pyx_n_s_direction, __pyx_n_s_world); if (unlikely(!__pyx_tuple__29)) __PYX_ERR(0, 12, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple__29);
   __Pyx_GIVEREF(__pyx_tuple__29);
-  __pyx_codeobj__30 = (PyObject*)__Pyx_PyCode_New(3, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__29, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_n_s_all_distances, 11, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__30)) __PYX_ERR(0, 11, __pyx_L1_error)
+  __pyx_codeobj__30 = (PyObject*)__Pyx_PyCode_New(3, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__29, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_n_s_all_distances, 12, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__30)) __PYX_ERR(0, 12, __pyx_L1_error)
 
-  /* "ray_tracer/engine/intersect.pyx":51
+  /* "ray_tracer/engine/intersect.pyx":52
  *         result[i] = vec1[i] - vec2[i]
  * 
+ * @cython.boundscheck(False)  # Deactivate bounds checking             # <<<<<<<<<<<<<<
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
+ */
+  __pyx_tuple__31 = PyTuple_Pack(14, __pyx_n_s_ray_origin, __pyx_n_s_ray_direction, __pyx_n_s_aabb_min, __pyx_n_s_aabb_max, __pyx_n_s_t1, __pyx_n_s_t2, __pyx_n_s_t3, __pyx_n_s_t4, __pyx_n_s_t5, __pyx_n_s_t6, __pyx_n_s_tmin, __pyx_n_s_tmax, __pyx_n_s_dir_fraction, __pyx_n_s_i); if (unlikely(!__pyx_tuple__31)) __PYX_ERR(0, 52, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_tuple__31);
+  __Pyx_GIVEREF(__pyx_tuple__31);
+  __pyx_codeobj__32 = (PyObject*)__Pyx_PyCode_New(4, 0, 0, 14, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__31, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_n_s_ray_intersects_aabb, 52, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__32)) __PYX_ERR(0, 52, __pyx_L1_error)
+
+  /* "ray_tracer/engine/intersect.pyx":82
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
  * cpdef double intersect(double[:] offset, double[:] direction, double[:, :] poly):             # <<<<<<<<<<<<<<
  *     cdef:
  *         double[:] intersect_point  # Changed to a memoryview
  */
-  __pyx_tuple__31 = PyTuple_Pack(3, __pyx_n_s_offset, __pyx_n_s_direction, __pyx_n_s_poly); if (unlikely(!__pyx_tuple__31)) __PYX_ERR(0, 51, __pyx_L1_error)
-  __Pyx_GOTREF(__pyx_tuple__31);
-  __Pyx_GIVEREF(__pyx_tuple__31);
-  __pyx_codeobj__32 = (PyObject*)__Pyx_PyCode_New(3, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__31, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_n_s_intersect, 51, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__32)) __PYX_ERR(0, 51, __pyx_L1_error)
+  __pyx_tuple__33 = PyTuple_Pack(3, __pyx_n_s_offset, __pyx_n_s_direction, __pyx_n_s_poly); if (unlikely(!__pyx_tuple__33)) __PYX_ERR(0, 82, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_tuple__33);
+  __Pyx_GIVEREF(__pyx_tuple__33);
+  __pyx_codeobj__34 = (PyObject*)__Pyx_PyCode_New(3, 0, 0, 3, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple__33, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_ray_tracer_engine_intersect_pyx, __pyx_n_s_intersect, 82, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__34)) __PYX_ERR(0, 82, __pyx_L1_error)
   __Pyx_RefNannyFinishContext();
   return 0;
   __pyx_L1_error:;
@@ -23735,45 +24538,57 @@ if (!__Pyx_RefNanny) {
  * 
  * cimport numpy as np
  * import numpy as npply             # <<<<<<<<<<<<<<
+ * cimport cython
  * from cython.view cimport array as cvarray
- * np.import_array()
  */
   __pyx_t_7 = __Pyx_ImportDottedModule(__pyx_n_s_numpy, NULL); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 4, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_7);
   if (PyDict_SetItem(__pyx_d, __pyx_n_s_npply, __pyx_t_7) < 0) __PYX_ERR(0, 4, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
 
-  /* "ray_tracer/engine/intersect.pyx":6
- * import numpy as npply
+  /* "ray_tracer/engine/intersect.pyx":7
+ * cimport cython
  * from cython.view cimport array as cvarray
  * np.import_array()             # <<<<<<<<<<<<<<
  * 
  * # Import statements here
  */
-  __pyx_t_9 = __pyx_f_5numpy_import_array(); if (unlikely(__pyx_t_9 == ((int)-1))) __PYX_ERR(0, 6, __pyx_L1_error)
+  __pyx_t_9 = __pyx_f_5numpy_import_array(); if (unlikely(__pyx_t_9 == ((int)-1))) __PYX_ERR(0, 7, __pyx_L1_error)
 
-  /* "ray_tracer/engine/intersect.pyx":11
+  /* "ray_tracer/engine/intersect.pyx":12
  * from libc.math cimport sqrt
  * 
  * cpdef np.ndarray[np.float64_t] all_distances(np.ndarray[np.float64_t] offset, np.ndarray[np.float64_t] direction,             # <<<<<<<<<<<<<<
  *                                             np.ndarray[np.float64_t, ndim = 3] world):
  *     cdef int i
  */
-  __pyx_t_7 = __Pyx_CyFunction_New(&__pyx_mdef_10ray_tracer_6engine_9intersect_1all_distances, 0, __pyx_n_s_all_distances, NULL, __pyx_n_s_ray_tracer_engine_intersect, __pyx_d, ((PyObject *)__pyx_codeobj__30)); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 11, __pyx_L1_error)
+  __pyx_t_7 = __Pyx_CyFunction_New(&__pyx_mdef_10ray_tracer_6engine_9intersect_1all_distances, 0, __pyx_n_s_all_distances, NULL, __pyx_n_s_ray_tracer_engine_intersect, __pyx_d, ((PyObject *)__pyx_codeobj__30)); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 12, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_7);
-  if (PyDict_SetItem(__pyx_d, __pyx_n_s_all_distances, __pyx_t_7) < 0) __PYX_ERR(0, 11, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_all_distances, __pyx_t_7) < 0) __PYX_ERR(0, 12, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
 
-  /* "ray_tracer/engine/intersect.pyx":51
+  /* "ray_tracer/engine/intersect.pyx":52
  *         result[i] = vec1[i] - vec2[i]
  * 
+ * @cython.boundscheck(False)  # Deactivate bounds checking             # <<<<<<<<<<<<<<
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
+ */
+  __pyx_t_7 = __Pyx_CyFunction_New(&__pyx_mdef_10ray_tracer_6engine_9intersect_3ray_intersects_aabb, 0, __pyx_n_s_ray_intersects_aabb, NULL, __pyx_n_s_ray_tracer_engine_intersect, __pyx_d, ((PyObject *)__pyx_codeobj__32)); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 52, __pyx_L1_error)
+  __Pyx_GOTREF(__pyx_t_7);
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_ray_intersects_aabb, __pyx_t_7) < 0) __PYX_ERR(0, 52, __pyx_L1_error)
+  __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
+
+  /* "ray_tracer/engine/intersect.pyx":82
+ * @cython.wraparound(False)   # Deactivate negative indexing.
+ * @cython.cdivision(True)     # Deactivate division by zero checking in C division
  * cpdef double intersect(double[:] offset, double[:] direction, double[:, :] poly):             # <<<<<<<<<<<<<<
  *     cdef:
  *         double[:] intersect_point  # Changed to a memoryview
  */
-  __pyx_t_7 = __Pyx_CyFunction_New(&__pyx_mdef_10ray_tracer_6engine_9intersect_3intersect, 0, __pyx_n_s_intersect, NULL, __pyx_n_s_ray_tracer_engine_intersect, __pyx_d, ((PyObject *)__pyx_codeobj__32)); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 51, __pyx_L1_error)
+  __pyx_t_7 = __Pyx_CyFunction_New(&__pyx_mdef_10ray_tracer_6engine_9intersect_5intersect, 0, __pyx_n_s_intersect, NULL, __pyx_n_s_ray_tracer_engine_intersect, __pyx_d, ((PyObject *)__pyx_codeobj__34)); if (unlikely(!__pyx_t_7)) __PYX_ERR(0, 82, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_7);
-  if (PyDict_SetItem(__pyx_d, __pyx_n_s_intersect, __pyx_t_7) < 0) __PYX_ERR(0, 51, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_intersect, __pyx_t_7) < 0) __PYX_ERR(0, 82, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_7); __pyx_t_7 = 0;
 
   /* "ray_tracer/engine/intersect.pyx":1
@@ -26895,6 +27710,122 @@ fail:;
     #endif
 }
 
+/* pybytes_as_double */
+  static double __Pyx_SlowPyString_AsDouble(PyObject *obj) {
+    PyObject *float_value;
+#if PY_MAJOR_VERSION >= 3
+    float_value = PyFloat_FromString(obj);
+#else
+    float_value = PyFloat_FromString(obj, 0);
+#endif
+    if (likely(float_value)) {
+        double value = PyFloat_AS_DOUBLE(float_value);
+        Py_DECREF(float_value);
+        return value;
+    }
+    return (double)-1;
+}
+static const char* __Pyx__PyBytes_AsDouble_Copy(const char* start, char* buffer, Py_ssize_t length) {
+    int last_was_punctuation = 1;
+    Py_ssize_t i;
+    for (i=0; i < length; i++) {
+        char chr = start[i];
+        int is_punctuation = (chr == '_') | (chr == '.') | (chr == 'e') | (chr == 'E');
+        *buffer = chr;
+        buffer += (chr != '_');
+        if (unlikely(last_was_punctuation & is_punctuation)) goto parse_failure;
+        last_was_punctuation = is_punctuation;
+    }
+    if (unlikely(last_was_punctuation)) goto parse_failure;
+    *buffer = '\0';
+    return buffer;
+parse_failure:
+    return NULL;
+}
+static double __Pyx__PyBytes_AsDouble_inf_nan(const char* start, Py_ssize_t length) {
+    int matches = 1;
+    char sign = start[0];
+    int is_signed = (sign == '+') | (sign == '-');
+    start += is_signed;
+    length -= is_signed;
+    switch (start[0]) {
+        #ifdef Py_NAN
+        case 'n':
+        case 'N':
+            if (unlikely(length != 3)) goto parse_failure;
+            matches &= (start[1] == 'a' || start[1] == 'A');
+            matches &= (start[2] == 'n' || start[2] == 'N');
+            if (unlikely(!matches)) goto parse_failure;
+            return (sign == '-') ? -Py_NAN : Py_NAN;
+        #endif
+        case 'i':
+        case 'I':
+            if (unlikely(length < 3)) goto parse_failure;
+            matches &= (start[1] == 'n' || start[1] == 'N');
+            matches &= (start[2] == 'f' || start[2] == 'F');
+            if (likely(length == 3 && matches))
+                return (sign == '-') ? -Py_HUGE_VAL : Py_HUGE_VAL;
+            if (unlikely(length != 8)) goto parse_failure;
+            matches &= (start[3] == 'i' || start[3] == 'I');
+            matches &= (start[4] == 'n' || start[4] == 'N');
+            matches &= (start[5] == 'i' || start[5] == 'I');
+            matches &= (start[6] == 't' || start[6] == 'T');
+            matches &= (start[7] == 'y' || start[7] == 'Y');
+            if (unlikely(!matches)) goto parse_failure;
+            return (sign == '-') ? -Py_HUGE_VAL : Py_HUGE_VAL;
+        case '.': case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+            break;
+        default:
+            goto parse_failure;
+    }
+    return 0.0;
+parse_failure:
+    return -1.0;
+}
+static CYTHON_INLINE int __Pyx__PyBytes_AsDouble_IsSpace(char ch) {
+    return (ch == 0x20) | !((ch < 0x9) | (ch > 0xd));
+}
+CYTHON_UNUSED static double __Pyx__PyBytes_AsDouble(PyObject *obj, const char* start, Py_ssize_t length) {
+    double value;
+    Py_ssize_t i, digits;
+    const char *last = start + length;
+    char *end;
+    while (__Pyx__PyBytes_AsDouble_IsSpace(*start))
+        start++;
+    while (start < last - 1 && __Pyx__PyBytes_AsDouble_IsSpace(last[-1]))
+        last--;
+    length = last - start;
+    if (unlikely(length <= 0)) goto fallback;
+    value = __Pyx__PyBytes_AsDouble_inf_nan(start, length);
+    if (unlikely(value == -1.0)) goto fallback;
+    if (value != 0.0) return value;
+    digits = 0;
+    for (i=0; i < length; digits += start[i++] != '_');
+    if (likely(digits == length)) {
+        value = PyOS_string_to_double(start, &end, NULL);
+    } else if (digits < 40) {
+        char number[40];
+        last = __Pyx__PyBytes_AsDouble_Copy(start, number, length);
+        if (unlikely(!last)) goto fallback;
+        value = PyOS_string_to_double(number, &end, NULL);
+    } else {
+        char *number = (char*) PyMem_Malloc((digits + 1) * sizeof(char));
+        if (unlikely(!number)) goto fallback;
+        last = __Pyx__PyBytes_AsDouble_Copy(start, number, length);
+        if (unlikely(!last)) {
+            PyMem_Free(number);
+            goto fallback;
+        }
+        value = PyOS_string_to_double(number, &end, NULL);
+        PyMem_Free(number);
+    }
+    if (likely(end == last) || (value == (double)-1 && PyErr_Occurred())) {
+        return value;
+    }
+fallback:
+    return __Pyx_SlowPyString_AsDouble(obj);
+}
+
 /* PyObject_GenericGetAttrNoDict */
   #if CYTHON_USE_TYPE_SLOTS && CYTHON_USE_PYTYPE_LOOKUP && PY_VERSION_HEX < 0x03070000
 static PyObject *__Pyx_RaiseGenericGetAttributeError(PyTypeObject *tp, PyObject *attr_name) {
@@ -29463,6 +30394,18 @@ __pyx_fail:
         return (target_type) value;\
     }
 
+/* MemviewDtypeToObject */
+  static CYTHON_INLINE PyObject *__pyx_memview_get_double(const char *itemp) {
+    return (PyObject *) PyFloat_FromDouble(*(double *) itemp);
+}
+static CYTHON_INLINE int __pyx_memview_set_double(const char *itemp, PyObject *obj) {
+    double value = __pyx_PyFloat_AsDouble(obj);
+    if (unlikely((value == (double)-1) && PyErr_Occurred()))
+        return 0;
+    *(double *) itemp = value;
+    return 1;
+}
+
 /* Declarations */
   #if CYTHON_CCOMPLEX && (1) && (!0 || __cplusplus)
   #ifdef __cplusplus
@@ -30970,7 +31913,7 @@ __Pyx_PyType_GetName(PyTypeObject* tp)
     if (unlikely(name == NULL) || unlikely(!PyUnicode_Check(name))) {
         PyErr_Clear();
         Py_XDECREF(name);
-        name = __Pyx_NewRef(__pyx_n_s__33);
+        name = __Pyx_NewRef(__pyx_n_s__35);
     }
     return name;
 }

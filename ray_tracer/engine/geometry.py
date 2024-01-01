@@ -1,6 +1,6 @@
 import numpy
 import numpy as np
-from typing import Union, List, Tuple, Optional
+from typing import Union, List, Tuple, Optional, Callable
 from scipy.spatial.transform import Rotation
 from math import acos, cos, sin, sqrt
 from ray_tracer.engine.intersect import all_distances
@@ -91,43 +91,53 @@ class Ray:
         distances = [d if d is not None and d > 0.00001 else np.NAN for d in distances]
         return distances
 
-    def refract(self, geometry_element: Union['Polygon', 'Sphere'], intersect_point) -> Union[None, 'Ray']:
-        # Calculate the intersection point; should handle the possibility of no intersection.
-        offset = intersect_point
-        if offset is None:
+
+    def refract(self, geometry_element: Union['Polygon', 'Sphere'], intersect_point: Vector, is_inside: bool) -> Tuple[Union[None, 'Ray'], bool]:
+        """
+        Calculate the refracted ray at the intersection point on the geometry.
+
+        :param geometry_element: The geometric object being intersected.
+        :param intersect_point: The point of intersection.
+        :param is_inside: If the ray is currently inside the medium or outside. This will determine the refraction direction.
+        :return: A tuple of the refracted ray (or None if total internal reflection occurs) and a boolean indicating whether total internal reflection occurred.
+        """
+        if intersect_point is None:
             return None, False
 
         # Calculate the normal at the intersection point.
-        normal = geometry_element.normal_vector(offset)  # Assuming normal_vector takes a point.
+        normal = geometry_element.normal_vector(intersect_point)
+        incoming_dir = self.direction
 
-        # Identify whether the ray is entering or exiting the medium.
-        is_exiting = self.direction.dot(normal) > 0
-        if is_exiting:
-            # If exiting, the normal vector should be reversed.
+        # Calculate cos(theta_i) using the absolute value of the dot product.
+
+        cosi = normal.dot(incoming_dir)
+
+        if cosi < 0:
             normal = -normal
+            cosi = normal.dot(incoming_dir)
 
-        # Indices of refraction.
-        n1 = 1.0  # Assuming air or vacuum outside the material.
-        n2 = geometry_element.surface.refraction_streangth  # Assuming this is the correct property.
+        # Define the refractive indices for air (or vacuum) and the material.
+        n2 = geometry_element.surface.refraction_strength  # Index for the material.
 
-        # Refractive indices ratio depends on whether the ray is entering or exiting the medium.
-        eta = n1 / n2 if is_exiting else n2 / n1
+        # Calculate the ratio of the refractive indices, considering the direction of the ray.
+        eta = 1 / n2 if not is_inside else n2 / 1
 
-        # cos(theta) calculation.
-        cosi = -normal.dot(self.direction)
-        k = 1 - eta * eta * (1 - cosi * cosi)
+        # Calculate sin^2(theta_t).
+        sint2 = eta ** 2 * (1.0 - cosi ** 2)
 
-        # Check for total internal reflection.
-        if k < 0:
-            # Total internal reflection occurred; no refraction.
-            return None, True
+        # Handle total internal reflection.
+        if sint2 > 1.0:
+            return None, True  # Total internal reflection occurred, no refraction
 
-        # Calculate refracted ray direction.
-        direction = (self.direction * eta) + normal * (eta * cosi - sqrt(k))
+        # Calculate cos(theta_t) using trigonometric identity.
+        cost = np.sqrt(1.0 - sint2)
 
-        # Create the refracted ray.
-        refracted_ray = Ray(offset, direction)
+        # Calculate the direction of the refracted ray.
+        refract_dir = eta * incoming_dir + (eta * cosi - cost) * normal
+        refract_dir = refract_dir / np.linalg.norm(refract_dir)  # Normalize the direction.
 
+        # Create the refracted ray, ensuring it starts from the intersection point going in the refracted direction.
+        refracted_ray = Ray(intersect_point, refract_dir)
         return refracted_ray, False
 
     def reflect(self, geometry_element: Union['Polygon', 'Sphere'], intersect_point) -> Union[None, 'Ray']:
@@ -157,6 +167,23 @@ class Polygon:
         self.c = c
         self.surface = surface or Surface()
         self.normal_vec = (b-a).cross(c-a).norm()
+        self.bbox_top, self.bbox_bottom =self.create_bounding_box(a, b, c)
+
+    @staticmethod
+    def create_bounding_box(a, b, c):
+        # Unzip the list of vertices into three separate lists for x, y, and z coordinates.
+        xs, ys, zs = zip(*[a, b, c])
+
+        # Find the minimum and maximum values for each dimension.
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        min_z, max_z = min(zs), max(zs)
+
+        # Define the bottom-left-front and top-right-back corners of the bounding box.
+        bottom_left_front = (min_x, min_y, min_z)
+        top_right_back = (max_x, max_y, max_z)
+
+        return bottom_left_front, top_right_back
 
     def normal_vector(self, _):
         return self.normal_vec
@@ -203,7 +230,8 @@ class Polygon:
 class Geometry:
     elements: List[Union[Polygon, 'Sphere']]
     polys_np = None
-    def __init__(self, *polys: Polygon):
+    spheres_np = None
+    def __init__(self, *polys: Union[Polygon, 'Sphere']):
         self.elements = list(polys)
 
     def __add__(self, other: 'Geometry'):
@@ -227,7 +255,7 @@ class Geometry:
 
     def polys_to_numpy(self):
         if self.polys_np is None:
-            self.polys_np=np.array([np.array([el.a, el.b, el.c, el.normal_vec])
+            self.polys_np=np.array([np.array([el.a, el.b, el.c, el.normal_vec, el.bbox_top, el.bbox_bottom])
                                     for el in self.elements if type(el) == Polygon]).astype(np.float64)
         return self.polys_np
 
@@ -235,7 +263,7 @@ class Geometry:
         if not self.spheres_np:
             self.spheres_np=np.array([np.array([el.pos, el.radius])
                                     for el in self.elements if type(el) == Sphere])
-            return self.polys_np
+            return self.spheres_np
 
     def spheres(self):
         return [el for el in self.elements if type(el) == Sphere]
@@ -311,13 +339,26 @@ class Sphere:
     def normal_vector(self, intersect: Vector):
         return (intersect - self.pos).norm()
 
+    def transpose(self, vec: Vector) -> 'Sphere':
+        return Sphere(pos=self.pos + vec, radius=self.radius, surface=self.surface)
+
+    def rotate(self, angle: float, axis: 'Ray') -> 'Sphere':
+        return Sphere(pos=self.pos.rotate(angle, axis), radius=self.radius, surface=self.surface)
+
 
 class Surface:
     def __init__(self, k_ambient=0, k_diffuse=1, k_reflect=0, color: Vector=None, k_refraction: float = 0,
-                 refraction_streangth: float = 1.33):
+                 refraction_strength: float = 1.33, colormap: Optional[Callable[[Vector], Vector]] = None):
         self.k_ambient = k_ambient
         self.k_diffuse = k_diffuse
         self.k_reflect = k_reflect
-        self.color = color if color is not None else Vector.from_list([1, 1, 1])
+        self._color = color if color is not None else Vector.from_list([1, 1, 1])
+        self.colormap = colormap
         self.k_refraction = k_refraction
-        self.refraction_streangth = refraction_streangth
+        self.refraction_strength = refraction_strength
+
+    def color(self, position: Vector):
+        if self.colormap is None:
+            return self._color
+        else:
+            return self.colormap(position)

@@ -3,3 +3,4 @@ venv
 build/*
 __pycache__
 generated_images
+ray_tracer/resources/stl_files

@@ -1,47 +1,64 @@
 import math
+import numpy
+from pathlib import Path
 
 from ray_tracer.engine.core import *
 from PIL import Image
-import random
+from ray_tracer.engine.utils import stl_to_polys
 
+
+def colormap(v: Vector) -> Vector:
+    return np.sin(v * Vector.from_list([0, 1, 0]) / 25) + Vector.from_list([0,1,0])
 
 if __name__ == "__main__":
-    room_surface = Surface(k_ambient=50, k_diffuse=1, k_reflect=0, k_refraction=0, color=Vector.from_list([1, 1, 1]))
-    room = Cube.from_center(Vector.from_list([0, 0, 599]), 1200, surface=room_surface)
 
-    floor = Square(Vector.from_list([175, -100000, 0]), Vector.from_list([175, 100000, 0]), Vector.from_list([175, 100000, 200000]), Vector.from_list([175, -100000, 200000]), room_surface)
+    room_surface = Surface(k_ambient=1, k_diffuse=1, k_reflect=0, k_refraction=0, color=Vector.from_list([1, 1, 1]))
+    reflective_surface = Surface(k_ambient=1, k_diffuse=0.5, k_reflect=0.5, k_refraction=0, color=Vector.from_list([0.9, 0.9, 0.9]))
+    transparent_surface = Surface(k_ambient=1, k_diffuse=0.3, k_reflect=0, k_refraction=0.7, color=Vector.from_list([0.7, 0.9, 0.1]))
+    green_surface = Surface(k_ambient=1, k_diffuse=1, k_reflect=0, k_refraction=0, color=Vector.from_list([0, 1, 1]))
 
-    # aq_surface = Surface(k_ambient=0, k_diffuse=0.1, k_reflect=0.3, k_refraction=0.6, refraction_streangth=1.5, color=Vector.from_list([0, 0, 1]))
-    # aquarium = Cube.from_center(Vector.from_list([0, 0, 599]), 500, surface=aq_surface)
+    colormap_surface = Surface(k_ambient=1, k_diffuse=1, k_reflect=0, k_refraction=0, colormap=colormap)
 
-    sphere = Sphere(Vector.from_list([-300, 250, 800]), radius=250, surface=Surface(k_ambient=1, k_diffuse=0.2, k_reflect=0.8, k_refraction=0, color=Vector.from_list([0.9, 0.9, 0.9])))
-    sphere2 = Sphere(Vector.from_list([50, -100, 300]), radius=100,
-                    surface=Surface(k_ambient=1, k_diffuse=0.2, k_reflect=0, k_refraction=0.8,
-                                    color=Vector.from_list([0, 1, 1])))
+    # Things I can put into the scene
+    room = Cube.from_center(Vector.from_list([0, 0, 200]), 405, surface=room_surface)
+
+    floor = Square(Vector.from_list([175, 100000, -100000]), Vector.from_list([175, -100000, -100000]), Vector.from_list([175, 100000, 100000]), Vector.from_list([175, -100000, 100000]), room_surface)
+
+    grid_size = 6
+    sphere_grid = [
+        Sphere(Vector.from_list([-100, 100-(grid_size / 2) * 200 + i*200, 100 + j*200]),
+               radius=50, surface=reflective_surface)
+        for i in range(grid_size) for j in range(grid_size)]
 
     cube_center = Vector.from_list([0, 0, 500])
     rotated_small_cube = Cube\
         .from_center(cube_center, 200,
-                     surface=Surface(k_ambient=1, k_diffuse=0.1, k_reflect=0.2, k_refraction=0.7, color=Vector.from_list([0.7, 0.7, 0.3]))) \
+                     surface=transparent_surface) \
         .rotate(45, Ray(cube_center, Vector.from_list([1, 0, 0]))) \
         .rotate(45, Ray(cube_center, Vector.from_list([0, 1, 0])))
 
-    world = floor + rotated_small_cube + Geometry(sphere, sphere2)
+    colormap_sphere = Sphere(Vector.from_list([202, 0, 200]), radius=75, surface=colormap_surface)
+    rabbit = stl_to_polys(Vector.from_list([0, 0, 200]), Path(__file__).parent / "resources" / "rabbit.stl",
+                          surface=green_surface)
 
-    pixel_scale = 19
-    screen = Screen(pixel_scale*60, pixel_scale*100, fov=75, scale=1/(pixel_scale*4))
-
+    # Lights
     light_sources = [
-        LightSource(Vector.from_list([-500, 0, 500]), 1000),
+        SphericalLightSource(strength=200, pos=Vector.from_list([-100, 0, 300]), radius=10, surface=None),
+        SphericalLightSource(strength=100, pos=Vector.from_list([100, 0, 50]), radius=10, surface=None),
+        SphericalLightSource(strength=100, pos=Vector.from_list([-200, 0, 50]), radius=10, surface=None),
     ]
 
-    tracer = Tracer(world=world, light_sources=light_sources, screen=screen)
+    # Set up world
+    world = rabbit + room
 
-    optimal_batch_size = int(pixel_scale * 100 / math.sqrt(30))
-    pixels = tracer.run_parallel_batched(iterations=7, batch_size=optimal_batch_size)
+    # Render
+    pixel_scale = 2
+    screen = Screen(pixel_scale*60, pixel_scale*100, fov=90, scale=1/(pixel_scale*4))
+    tracer = Tracer(world=world, light_sources=light_sources, screen=screen)
+    pixels = tracer.run_parallel_batched(iterations=3, light_iterations=5)
 
     # Plot
     data = np.array(pixels, dtype=np.uint8)
     image = Image.fromarray(data)
     image.show()
-    #image.save("generated_images/" + "prism_" + str(random.randint(1, 10000)) + ".jpg", "JPEG")
+    image.save("generated_images/" + "rabbit_" + str(time.time()) + ".jpg", "JPEG")
